@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Complete Dependency Tree Extractor
+ * Complete Dependency Tree Extractor - Fixed Version
  * Analyzes file dependencies and provides complete context for code editing
  */
 
@@ -421,6 +421,10 @@ class DependencyExtractor {
 	}
 
 	resolveImportPath(importPath, fromFile) {
+		if (this.debug) {
+			console.log(`     🔍 Resolving "${importPath}" from ${fromFile}`);
+		}
+
 		// Handle Svelte/SvelteKit aliases first
 		if (this.isSvelteAlias(importPath)) {
 			const resolved = this.resolveSvelteAlias(importPath);
@@ -574,12 +578,31 @@ class DependencyExtractor {
 			path.dirname(this.rootDir),
 		];
 
-		for (const root of possibleRoots) {
-			if (!fs.existsSync(root)) continue;
-
-			const resolved = this.tryResolveWithExtensions(
-				path.resolve(root, importPath)
+		if (this.debug) {
+			console.log(
+				`       Trying to resolve absolute import: ${importPath}`
 			);
+			console.log(`       Current rootDir: ${this.rootDir}`);
+			console.log(`       Possible roots: ${possibleRoots.join(", ")}`);
+		}
+
+		for (const root of possibleRoots) {
+			if (!fs.existsSync(root)) {
+				if (this.debug) {
+					console.log(`       Root doesn't exist: ${root}`);
+				}
+				continue;
+			}
+
+			const fullPath = path.resolve(root, importPath);
+			if (this.debug) {
+				console.log(`       Trying full path: ${fullPath}`);
+				console.log(
+					`       Path exists check: ${fs.existsSync(fullPath)}`
+				);
+			}
+
+			const resolved = this.tryResolveWithExtensions(fullPath);
 			if (resolved) {
 				if (this.debug) {
 					console.log(
@@ -587,28 +610,73 @@ class DependencyExtractor {
 					);
 				}
 				return resolved;
+			} else if (this.debug) {
+				console.log(`       ❌ No resolution found for: ${fullPath}`);
 			}
 		}
 
+		if (this.debug) {
+			console.log(
+				`       ❌ Could not resolve absolute import: ${importPath}`
+			);
+		}
 		return null;
 	}
 
 	resolveRelativeImport(importPath, fromFile) {
 		const fromDir = path.dirname(fromFile);
 		const resolvedPath = path.resolve(fromDir, importPath);
+
+		if (this.debug) {
+			console.log(
+				`       Resolving relative: ${importPath} from ${fromDir}`
+			);
+			console.log(`       Full path: ${resolvedPath}`);
+		}
+
 		return this.tryResolveWithExtensions(resolvedPath);
 	}
 
 	tryResolveWithExtensions(basePath) {
-		// Try exact path first
+		if (this.debug) {
+			console.log(
+				`       Trying to resolve with extensions: ${basePath}`
+			);
+		}
+
+		// Try exact path first, but only if it's a file (not a directory)
 		if (fs.existsSync(basePath) && !this.shouldExclude(basePath)) {
-			return basePath;
+			const stats = fs.statSync(basePath);
+			if (stats.isFile()) {
+				if (this.debug) {
+					console.log(`       ✅ Found exact file: ${basePath}`);
+				}
+				return basePath;
+			} else if (this.debug) {
+				console.log(
+					`       ❌ Exact path is a directory, trying extensions: ${basePath}`
+				);
+			}
+		} else if (this.debug) {
+			console.log(
+				`       ❌ Exact path doesn't exist or excluded: ${basePath}`
+			);
 		}
 
 		// Try with extensions
 		for (const ext of this.extensions) {
 			const withExt = basePath + ext;
+			if (this.debug) {
+				console.log(`       Trying with extension: ${withExt}`);
+				console.log(`       File exists: ${fs.existsSync(withExt)}`);
+				console.log(
+					`       Should exclude: ${this.shouldExclude(withExt)}`
+				);
+			}
 			if (fs.existsSync(withExt) && !this.shouldExclude(withExt)) {
+				if (this.debug) {
+					console.log(`       ✅ Found with extension: ${withExt}`);
+				}
 				return withExt;
 			}
 		}
@@ -616,11 +684,26 @@ class DependencyExtractor {
 		// Try as directory with index files
 		for (const ext of this.extensions) {
 			const indexPath = path.join(basePath, `index${ext}`);
+			if (this.debug) {
+				console.log(`       Trying index file: ${indexPath}`);
+				console.log(
+					`       Index file exists: ${fs.existsSync(indexPath)}`
+				);
+			}
 			if (fs.existsSync(indexPath) && !this.shouldExclude(indexPath)) {
+				if (this.debug) {
+					console.log(`       ✅ Found index file: ${indexPath}`);
+				}
 				return indexPath;
 			}
 		}
 
+		if (this.debug) {
+			console.log(`       ❌ Could not resolve: ${basePath}`);
+			console.log(
+				`       Extensions tried: ${this.extensions.join(", ")}`
+			);
+		}
 		return null;
 	}
 
