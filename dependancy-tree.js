@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * Complete Dependency Tree Extractor - Fixed Version
+ * Complete Dependency Tree Extractor - Enhanced Version with Directory Scanning
  * Analyzes file dependencies and provides complete context for code editing
+ * New: Supports directory scanning with file pattern filtering
  */
 
 const fs = require("fs");
@@ -61,33 +62,169 @@ class DependencyExtractor {
 		};
 	}
 
-	async analyze(filePath) {
-		console.log(`🔍 Analyzing dependencies for: ${filePath}\n`);
+	async analyze(targetPath, pattern = null) {
+		console.log(`🔍 Analyzing dependencies for: ${targetPath}\n`);
 
 		// Auto-detect project root if not explicitly set
 		if (!this.rootDir || this.rootDir === process.cwd()) {
-			this.autoDetectProjectRoot(filePath);
+			this.autoDetectProjectRoot(targetPath);
 		}
 
 		if (this.debug) {
 			console.log(`📁 Using root directory: ${this.rootDir}`);
-			console.log(`📁 Target file: ${path.resolve(filePath)}\n`);
+			console.log(`📁 Target path: ${path.resolve(targetPath)}\n`);
 		}
 
-		const tree = this.extractDependencies(filePath);
-		if (!tree) {
-			throw new Error("Could not analyze the file");
+		// Check if targetPath is a directory or file
+		const targetStat = fs.statSync(targetPath);
+		let filesToAnalyze = [];
+
+		if (targetStat.isDirectory()) {
+			// Directory mode - find files matching pattern
+			if (!pattern) {
+				throw new Error(
+					"Pattern is required when analyzing a directory. Use --pattern option."
+				);
+			}
+
+			filesToAnalyze = this.findMatchingFiles(targetPath, pattern);
+
+			if (filesToAnalyze.length === 0) {
+				throw new Error(
+					`No files found matching pattern "${pattern}" in directory "${targetPath}"`
+				);
+			}
+
+			console.log(
+				`📂 Found ${filesToAnalyze.length} files matching pattern "${pattern}":`
+			);
+			filesToAnalyze.forEach((file) => {
+				console.log(`   ${path.relative(this.rootDir, file)}`);
+			});
+			console.log("");
+		} else {
+			// Single file mode
+			filesToAnalyze = [targetPath];
 		}
 
-		return tree;
+		// Analyze each file
+		const results = [];
+		for (const filePath of filesToAnalyze) {
+			// Reset state for each file analysis
+			this.visited.clear();
+			this.circularDeps.clear();
+			this.unresolved.clear();
+
+			const tree = this.extractDependencies(filePath);
+			if (tree) {
+				results.push({
+					filePath: filePath,
+					relativePath: path.relative(this.rootDir, filePath),
+					tree: tree,
+				});
+			}
+		}
+
+		return {
+			isMultiFile: filesToAnalyze.length > 1,
+			pattern: pattern,
+			targetPath: targetPath,
+			results: results,
+		};
+	}
+
+	findMatchingFiles(dirPath, pattern) {
+		const matchingFiles = [];
+		const regex = this.patternToRegex(pattern);
+
+		if (this.debug) {
+			console.log(`🔍 Searching for files matching pattern: ${pattern}`);
+			console.log(`📁 Search directory: ${dirPath}`);
+			console.log(`🎯 Regex pattern: ${regex}`);
+		}
+
+		const searchRecursive = (currentDir) => {
+			try {
+				const items = fs.readdirSync(currentDir);
+
+				for (const item of items) {
+					const itemPath = path.join(currentDir, item);
+
+					// Skip if excluded
+					if (this.shouldExclude(itemPath)) {
+						continue;
+					}
+
+					const stat = fs.statSync(itemPath);
+
+					if (stat.isDirectory()) {
+						// Recursively search subdirectories
+						searchRecursive(itemPath);
+					} else if (stat.isFile()) {
+						// Check if file matches pattern
+						if (regex.test(item) || regex.test(itemPath)) {
+							matchingFiles.push(itemPath);
+							if (this.debug) {
+								console.log(
+									`   ✅ Match: ${path.relative(
+										this.rootDir,
+										itemPath
+									)}`
+								);
+							}
+						} else if (this.debug) {
+							console.log(
+								`   ❌ No match: ${path.relative(
+									this.rootDir,
+									itemPath
+								)}`
+							);
+						}
+					}
+				}
+			} catch (error) {
+				if (this.debug) {
+					console.log(
+						`⚠️  Could not read directory ${currentDir}: ${error.message}`
+					);
+				}
+			}
+		};
+
+		searchRecursive(dirPath);
+		return matchingFiles;
+	}
+
+	patternToRegex(pattern) {
+		// Convert glob-like patterns to regex
+		// Support common patterns like *.controller.ts, **/*.service.js, etc.
+
+		// Escape special regex characters except * and ?
+		let regexPattern = pattern
+			.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+			.replace(/\*\*/g, "___DOUBLESTAR___") // Temporarily replace **
+			.replace(/\*/g, "[^/\\\\]*") // * matches anything except path separators
+			.replace(/___DOUBLESTAR___/g, ".*") // ** matches anything including path separators
+			.replace(/\?/g, "[^/\\\\]"); // ? matches single character except path separators
+
+		// If pattern doesn't start with path separators, match filename only
+		if (!pattern.includes("/") && !pattern.includes("\\")) {
+			regexPattern = `(^|[/\\\\])${regexPattern}$`;
+		} else {
+			regexPattern = `${regexPattern}$`;
+		}
+
+		return new RegExp(regexPattern, "i"); // Case insensitive
 	}
 
 	autoDetectProjectRoot(filePath) {
 		const resolvedFilePath = path.resolve(filePath);
-		const fileDir = path.dirname(resolvedFilePath);
+		const searchDir = fs.statSync(resolvedFilePath).isDirectory()
+			? resolvedFilePath
+			: path.dirname(resolvedFilePath);
 
 		// Walk up directories to find project root indicators
-		let currentDir = fileDir;
+		let currentDir = searchDir;
 		while (currentDir !== path.dirname(currentDir)) {
 			// Check for common project root indicators
 			const indicators = [
@@ -811,24 +948,128 @@ class DependencyExtractor {
 	}
 
 	// Output Formatters
-	printTree(tree, options = {}) {
+	printTree(analysisResult, options = {}) {
 		const format = options.format || "tree";
 
-		switch (format) {
-			case "json":
-				this.printJSON(tree);
-				break;
-			case "list":
-				this.printList(tree, options);
-				break;
-			case "content":
-				this.printContent(tree, options);
-				break;
-			default:
-				this.printTreeView(tree, options);
+		if (analysisResult.isMultiFile) {
+			this.printMultiFileResults(analysisResult, options);
+		} else {
+			// Single file - use original behavior
+			const tree = analysisResult.results[0].tree;
+			switch (format) {
+				case "json":
+					this.printJSON(tree);
+					break;
+				case "list":
+					this.printList(tree, options);
+					break;
+				case "content":
+					this.printContent(tree, options);
+					break;
+				default:
+					this.printTreeView(tree, options);
+			}
+			this.printSummary(tree, options);
+		}
+	}
+
+	printMultiFileResults(analysisResult, options = {}) {
+		const format = options.format || "tree";
+
+		console.log(`🌳 Multi-file Analysis Results`);
+		console.log(`📂 Pattern: ${analysisResult.pattern}`);
+		console.log(`📁 Directory: ${analysisResult.targetPath}`);
+		console.log(`📄 Files analyzed: ${analysisResult.results.length}\n`);
+
+		if (format === "json") {
+			console.log(JSON.stringify(analysisResult, null, 2));
+			return;
 		}
 
-		this.printSummary(tree, options);
+		for (let i = 0; i < analysisResult.results.length; i++) {
+			const result = analysisResult.results[i];
+
+			if (i > 0) {
+				console.log("\n" + "=".repeat(80) + "\n");
+			}
+
+			console.log(
+				`📄 File ${i + 1}/${analysisResult.results.length}: ${
+					result.relativePath
+				}`
+			);
+			console.log("─".repeat(60));
+
+			switch (format) {
+				case "list":
+					this.printList(result.tree, options);
+					break;
+				case "content":
+					this.printContent(result.tree, options);
+					break;
+				default:
+					this.printTreeView(result.tree, options);
+			}
+
+			// Print individual file summary
+			this.printFileSummary(result.tree, options);
+		}
+
+		// Print overall summary
+		this.printOverallSummary(analysisResult, options);
+	}
+
+	printFileSummary(tree, options = {}) {
+		if (options.format === "json" || options.format === "content") return;
+
+		const stats = this.getStats(tree);
+		console.log(`\n📊 File Statistics:`);
+		console.log(`  Dependencies: ${stats.totalFiles - 1}`); // Exclude the file itself
+		console.log(`  Total size: ${this.formatBytes(stats.totalSize)}`);
+		console.log(`  Max depth: ${stats.maxDepth}`);
+	}
+
+	printOverallSummary(analysisResult, options = {}) {
+		if (options.format === "json") return;
+
+		console.log("\n" + "=".repeat(80));
+		console.log("🌐 Overall Summary");
+		console.log("=".repeat(80));
+
+		let totalFiles = 0;
+		let totalSize = 0;
+		let maxDepth = 0;
+		let allFileTypes = {};
+
+		analysisResult.results.forEach((result) => {
+			const stats = this.getStats(result.tree);
+			totalFiles += stats.totalFiles;
+			totalSize += stats.totalSize;
+			maxDepth = Math.max(maxDepth, stats.maxDepth);
+
+			// Merge file types
+			Object.entries(stats.fileTypes).forEach(([ext, count]) => {
+				allFileTypes[ext] = (allFileTypes[ext] || 0) + count;
+			});
+		});
+
+		console.log(
+			`📄 Source files analyzed: ${analysisResult.results.length}`
+		);
+		console.log(
+			`📚 Total dependencies: ${
+				totalFiles - analysisResult.results.length
+			}`
+		);
+		console.log(`📊 Total size: ${this.formatBytes(totalSize)}`);
+		console.log(`🔍 Max dependency depth: ${maxDepth}`);
+
+		if (Object.keys(allFileTypes).length > 0) {
+			const types = Object.entries(allFileTypes)
+				.map(([ext, count]) => `${ext || "no-ext"}(${count})`)
+				.join(", ");
+			console.log(`📂 File types: ${types}`);
+		}
 	}
 
 	printJSON(tree) {
@@ -1168,13 +1409,18 @@ async function main() {
 
 	if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
 		console.log(`
-🌳 Complete Dependency Tree Extractor
+🌳 Complete Dependency Tree Extractor - Enhanced with Directory Scanning
 
 A powerful tool to analyze file dependencies and extract complete context for code editing.
+Now supports directory scanning with pattern matching for bulk analysis.
 
-Usage: node dependency-tree.js <file> [options]
+Usage: 
+  node dependency-tree.js <file> [options]                    # Single file analysis
+  node dependency-tree.js <directory> --pattern <glob> [options]  # Multiple files analysis
 
 Options:
+  --pattern <glob>      File pattern to match (required for directory analysis)
+                        Examples: "*.controller.ts", "**/*.service.js", "**/+page.svelte"
   --depth <n>           Maximum depth to traverse (default: infinite)
   --format <type>       Output format: tree, json, list, content (default: tree)
   --root <path>         Project root directory (auto-detected if not specified)
@@ -1186,6 +1432,14 @@ Options:
   --debug              Enable detailed debug output
   --help, -h           Show this help
 
+Pattern Examples:
+  "*.controller.ts"     Find all controller files in any directory
+  "**/*.service.js"     Find all service files recursively
+  "**/+page.svelte"     Find all SvelteKit page files
+  "auth/*.ts"           Find all TypeScript files in auth directory
+  "*.spec.ts"           Find all test specification files
+  "components/**/*.vue" Find all Vue components recursively
+
 Output Formats:
   tree                 Visual tree structure with dependency hierarchy
   list                 Flat list of all dependency files  
@@ -1193,24 +1447,36 @@ Output Formats:
   json                 Machine-readable JSON output for tools
 
 Examples:
+
+Single File Analysis:
   # Basic dependency analysis
   node dependency-tree.js src/app.module.ts
   
-  # Complete context for editing (most useful!)
+  # Complete context for editing
   node dependency-tree.js src/ai/ai.service.ts --format content --depth 3
+
+Multiple Files Analysis:
+  # Analyze all controllers
+  node dependency-tree.js src --pattern "*.controller.ts" --format content
   
+  # Analyze all services with dependencies
+  node dependency-tree.js src --pattern "**/*.service.ts" --format tree --depth 2
+  
+  # All SvelteKit pages
+  node dependency-tree.js src/routes --pattern "**/+page.svelte" --format content
+  
+  # Export all component context to file
+  node dependency-tree.js src/components --pattern "*.tsx" --format content > components-context.md
+  
+  # Debug pattern matching
+  node dependency-tree.js src --pattern "auth/*.ts" --debug
+
+Other Examples:
   # Debug import resolution issues
   node dependency-tree.js src/problematic-file.ts --debug --root ./app
   
-  # Export complete context to file
-  node dependency-tree.js src/service.ts --format content > context.md
-  
   # Include external dependencies
   node dependency-tree.js src/app.ts --format content --include-external
-  
-  # Svelte/SvelteKit projects
-  node dependency-tree.js src/routes/+page.svelte --format content
-  node dependency-tree.js src/lib/components/MyComponent.svelte --format content --debug
 
 Perfect for:
   ✨ Understanding code before editing
@@ -1219,11 +1485,12 @@ Perfect for:
   🤖 Providing complete context to AI assistants
   🛠️ Code review and refactoring
   🟠 Svelte/SvelteKit project analysis
+  📦 Bulk analysis of related files (NEW!)
         `);
 		return;
 	}
 
-	const filePath = args[0];
+	const targetPath = args[0];
 	const options = {
 		maxDepth: Infinity,
 		rootDir: null,
@@ -1251,9 +1518,14 @@ Perfect for:
 		maxContentLength: 100000,
 	};
 
+	let pattern = null;
+
 	// Parse command line arguments
 	for (let i = 1; i < args.length; i++) {
 		switch (args[i]) {
+			case "--pattern":
+				pattern = args[++i];
+				break;
 			case "--depth":
 				options.maxDepth = parseInt(args[++i]) || Infinity;
 				break;
@@ -1280,9 +1552,9 @@ Perfect for:
 				}
 				break;
 			case "--exclude":
-				const pattern = args[++i];
-				if (pattern) {
-					options.excludePatterns.push(new RegExp(pattern));
+				const excludePattern = args[++i];
+				if (excludePattern) {
+					options.excludePatterns.push(new RegExp(excludePattern));
 				}
 				break;
 			case "--debug":
@@ -1293,8 +1565,8 @@ Perfect for:
 
 	try {
 		const extractor = new DependencyExtractor(options);
-		const tree = await extractor.analyze(filePath);
-		extractor.printTree(tree, printOptions);
+		const result = await extractor.analyze(targetPath, pattern);
+		extractor.printTree(result, printOptions);
 	} catch (error) {
 		console.error(`❌ Error: ${error.message}`);
 		if (options.debug) {
