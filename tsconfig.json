@@ -1,0 +1,54 @@
+// path: tsconfig.json
+{
+	"compilerOptions": {
+    "allowJs": true,
+		"target": "ES2020",
+		"module": "CommonJS",
+		"lib": ["ES2020"],
+		"outDir": "./dist",
+		"rootDir": "./",
+
+		"strict": false,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"forceConsistentCasingInFileNames": true,
+
+		"declaration": true,
+		"declarationMap": true,
+		"sourceMap": true,
+
+		"resolveJsonModule": true,
+		"allowSyntheticDefaultImports": true,
+
+		"moduleResolution": "node",
+		"baseUrl": "./",
+		"paths": {
+			"@/*": ["src/*"]
+		},
+
+		"experimentalDecorators": true,
+		"emitDecoratorMetadata": true,
+
+		"removeComments": false,
+		"preserveConstEnums": true,
+
+		"typeRoots": ["./node_modules/@types"],
+
+		"incremental": true,
+		"tsBuildInfoFile": "./dist/.tsbuildinfo"
+	},
+	"include": ["*.ts", "src/**/*.ts", "*.js", "src/**/*.js"],
+	"exclude": [
+		"node_modules",
+		"dist",
+		"**/*.test.ts",
+		"**/*.spec.ts",
+		"**/*.d.ts"
+	],
+	"ts-node": {
+		"esm": false,
+		"compilerOptions": {
+			"module": "CommonJS"
+		}
+	}
+}
