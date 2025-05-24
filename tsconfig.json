@@ -37,7 +37,15 @@
 		"incremental": true,
 		"tsBuildInfoFile": "./dist/.tsbuildinfo"
 	},
-	"include": ["*.ts", "src/**/*.ts", "*.js", "src/**/*.js"],
+	"include": [
+		"*.ts", 
+		"src/**/*.ts", 
+		"bin/**/*.ts", 
+		"*.js", 
+		"src/**/*.js",
+		"interactive-cli.ts",
+		"colors.ts"
+	],
 	"exclude": [
 		"node_modules",
 		"dist",

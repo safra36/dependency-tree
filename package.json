@@ -1,62 +1,50 @@
 {
   "name": "ai-coding-agent",
-  "version": "1.0.0",
-  "description": "A powerful AI coding agent with dependency analysis and line tracking for intelligent code editing",
-  "main": "dist/ai-coding-agent.js",
+  "version": "1.1.0",
+  "description": "A powerful AI coding agent with Claude integration, dependency analysis and line tracking for intelligent code editing",
+  "main": "dist/interactive-cli.js",
+  "bin": {
+    "ai-agent": "./dist/ai-agent.js",
+    "ai-code": "./bin/ai-agent",
+    "deps-tree": "./dependancy-tree.js"
+  },
+  "preferGlobal": true,
   "scripts": {
     "build": "tsc",
     "build:watch": "tsc --watch",
     "clean": "rm -rf dist",
     "dev": "tsc --watch",
-    "start": "node dist/ai-coding-agent.js",
-    "start:agent": "node dist/ai-coding-agent.js",
-    "start:deps": "node dependancy-tree.js",
-    "demo": "npm run build && node dist/ai-coding-agent.js demo",
-    "demo:deps": "node dependancy-tree.js src --pattern \"*.ts\" --format content",
-    "demo:editor": "npm run build && node dist/line-tracker-editor.js",
-    "demo:prompt": "npm run build && node dist/ai-prompt-system.js",
-    "deps": "node dependancy-tree.js",
-    "deps:tree": "node dependancy-tree.js --format tree",
-    "deps:content": "node dependancy-tree.js --format content",
-    "deps:json": "node dependancy-tree.js --format json",
-    "deps:debug": "node dependancy-tree.js --debug",
-    "analyze": "npm run deps:content",
-    "analyze:file": "node dependancy-tree.js",
-    "analyze:dir": "node dependancy-tree.js . --pattern",
-    "lint": "echo 'No linter configured'",
-    "format": "echo 'No formatter configured'",
-    "typecheck": "tsc --noEmit",
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "test:unit": "echo \"No unit tests configured\"",
-    "test:integration": "echo \"No integration tests configured\"",
-    "context": "node dependancy-tree.js --format content --depth 3",
-    "context:ai": "npm run context > ai-context.md && echo 'Context exported to ai-context.md'",
-    "agent:init": "npm run build && node dist/ai-coding-agent.js init",
-    "agent:request": "npm run build && node dist/ai-coding-agent.js request",
-    "agent:compile": "npm run build && node dist/ai-coding-agent.js compile",
-    "install:cli": "npm link",
-    "uninstall:cli": "npm unlink",
-    "prebuild": "npm run clean",
-    "postbuild": "echo 'Build completed successfully'",
-    "prestart": "npm run build",
-    "help": "echo 'Available scripts: build, start, demo, deps, analyze, context, agent:*'",
-    "info": "npm run help"
-  },
-  "bin": {
-    "ai-agent": "./dist/ai-coding-agent.js",
-    "deps-tree": "./dependancy-tree.js"
+    "start": "npm run interactive",
+    "interactive": "npm run build && node dist/interactive-cli.js",
+    "agent": "npm run interactive",
+    "prepublishOnly": "npm run build",
+    "postinstall": "npm run build || echo 'Build failed, please run npm run build manually'",
+    "test:ai": "npm run build && node -e \"const {AnthropicService} = require('./dist/anthropic-service'); new AnthropicService({apiKey: process.env.ANTHROPIC_API_KEY}).testConnection().then(r => console.log('AI Connection:', r ? 'OK' : 'Failed'))\"",
+    "setup": "npm install && npm run build && echo '✅ Setup complete!'",
+    "global:install": "npm run build && npm link",
+    "global:uninstall": "npm unlink",
+    "help": "echo 'Available commands: ai-agent, ai-code, deps-tree'"
   },
   "keywords": [
     "ai",
     "coding-agent",
+    "claude",
+    "anthropic",
     "dependency-analysis",
     "code-editing",
     "typescript",
     "refactoring",
-    "line-tracking"
+    "line-tracking",
+    "interactive",
+    "automation",
+    "cli",
+    "global"
   ],
   "author": "",
   "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.0"
+  },
   "devDependencies": {
     "@types/node": "^22.15.21",
     "typescript": "^5.8.3"
@@ -66,7 +54,13 @@
   },
   "files": [
     "dist/",
+    "bin/",
     "dependancy-tree.js",
-    "README.md"
-  ]
+    "README.md",
+    ".env.example"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/ai-coding-agent.git"
+  }
 }
