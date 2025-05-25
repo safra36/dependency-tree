@@ -166,17 +166,31 @@ class AICodeAgent {
         return await this.handleProjectSetup(request);
       }
 
-      // 1. Analyze project state and build context
-      const projectInfo = await this.projectAnalyzer.analyzeProject();
-      const projectContext = this.buildProjectContext(projectInfo);
+      // 1. Get project structure using dependency tree
+      console.log("🌳 Analyzing project structure...");
+      const projectTree = await this.getProjectStructure();
 
-      // 2. Get AI action plan
-      const actionPlan = await this.getAIActionPlan(request, projectContext);
+      // 2. Ask AI to identify relevant files
+      console.log("🎯 Identifying relevant files...");
+      const relevantFiles = await this.identifyRelevantFiles(
+        request,
+        projectTree
+      );
 
-      // 3. Execute action plan
+      // 3. Build enhanced context with relevant files
+      console.log("📚 Building enhanced context...");
+      const enhancedContext = await this.buildEnhancedContext(
+        request,
+        relevantFiles
+      );
+
+      // 4. Get AI action plan with full context
+      const actionPlan = await this.getAIActionPlan(request, enhancedContext);
+
+      // 5. Execute action plan
       const changes = await this.executeActionPlan(actionPlan);
 
-      // 4. Post-execution validation
+      // 6. Post-execution validation
       await this.scanProject();
       const compilationResult = this.compileTypeScript();
 
@@ -284,41 +298,232 @@ class AICodeAgent {
     return { success: true, changes };
   }
 
-  private buildProjectContext(projectInfo: any): string {
+  private async getProjectStructure(): Promise<any> {
+    if (this.debug) {
+      console.log(colors.cyan("🔧 [DEBUG] Getting project structure..."));
+    }
+
+    try {
+      // Get all TypeScript/JavaScript files
+      const allFiles = this.findAllSourceFiles(this.projectRoot);
+      const projectStructure = {
+        root: this.projectRoot,
+        files: [],
+        directories: new Set(),
+      };
+
+      for (const filePath of allFiles) {
+        const relativePath = path.relative(this.projectRoot, filePath);
+        const dir = path.dirname(relativePath);
+
+        if (dir !== ".") {
+          projectStructure.directories.add(dir);
+        }
+
+        try {
+          const content = fs.readFileSync(filePath, "utf-8");
+          const description = this.generateFileDescription(content);
+
+          projectStructure.files.push({
+            path: relativePath,
+            absolutePath: filePath,
+            description,
+            size: fs.statSync(filePath).size,
+            extension: path.extname(filePath),
+          });
+        } catch (error) {
+          if (this.debug) {
+            console.log(
+              colors.gray(`  Could not read ${relativePath}: ${error.message}`)
+            );
+          }
+        }
+      }
+
+      if (this.debug) {
+        console.log(
+          colors.gray(
+            `  Found ${projectStructure.files.length} source files in ${projectStructure.directories.size} directories`
+          )
+        );
+      }
+
+      return projectStructure;
+    } catch (error) {
+      if (this.debug) {
+        console.log(
+          colors.red(
+            `🔧 [DEBUG] Project structure analysis failed: ${error.message}`
+          )
+        );
+      }
+      return { root: this.projectRoot, files: [], directories: [] };
+    }
+  }
+
+  private async identifyRelevantFiles(
+    request: string,
+    projectStructure: any
+  ): Promise<string[]> {
+    if (this.debug) {
+      console.log(colors.cyan("🔧 [DEBUG] Identifying relevant files..."));
+    }
+
+    const fileList = projectStructure.files
+      .map((f) => `${f.path} - ${f.description} (${f.extension})`)
+      .join("\n");
+
+    const prompt = `Analyze this user request and identify the most relevant existing files that should be included in the context for understanding and implementation.
+
+USER REQUEST: ${request}
+
+PROJECT FILES:
+${fileList}
+
+DIRECTORIES:
+${Array.from(projectStructure.directories).join(", ")}
+
+Respond with a JSON array of relative file paths that are most relevant to the request:
+["path1", "path2", "path3"]
+
+Guidelines:
+- Include files that would be modified or referenced
+- Include related components, services, or utilities
+- Include configuration files if relevant
+- Limit to 10 most relevant files
+- Focus on files that provide context for the implementation
+
+CRITICAL: Respond ONLY with valid JSON array. No explanatory text.`;
+
+    try {
+      const response = await this.anthropicService.generateCodeEdits(prompt);
+      const jsonMatch = response.match(/\[[\s\S]*?\]/);
+
+      if (jsonMatch) {
+        const relevantPaths = JSON.parse(jsonMatch[0]);
+        const fullPaths = relevantPaths.map((p) =>
+          path.join(this.projectRoot, p)
+        );
+
+        if (this.debug) {
+          console.log(
+            colors.gray(`  Selected ${fullPaths.length} relevant files:`)
+          );
+          relevantPaths.forEach((p) => console.log(colors.gray(`    ${p}`)));
+        }
+
+        return fullPaths;
+      }
+    } catch (error) {
+      if (this.debug) {
+        console.log(
+          colors.red(`🔧 [DEBUG] File identification failed: ${error.message}`)
+        );
+      }
+    }
+
+    // Fallback: return recent files or files mentioned in request
+    return this.extractFilePathsFromRequest(request).slice(0, 5);
+  }
+
+  private async buildEnhancedContext(
+    request: string,
+    relevantFiles: string[]
+  ): Promise<string> {
+    if (this.debug) {
+      console.log(colors.cyan("🔧 [DEBUG] Building enhanced context..."));
+    }
+
+    // Get project info
+    const projectInfo = await this.projectAnalyzer.analyzeProject();
+
     let context = `PROJECT CONTEXT:
 Type: ${projectInfo.type}
 Framework: ${projectInfo.framework || "none"}
 Package Manager: ${projectInfo.packageManager}
-Has package.json: ${projectInfo.hasPackageJson}
+
+USER REQUEST: ${request}
 
 `;
 
-    if (projectInfo.missingPackages.length > 0) {
-      context += `Missing packages: ${projectInfo.missingPackages.join(
-        ", "
-      )}\n`;
+    // Add relevant file contents
+    if (relevantFiles.length > 0) {
+      context += `RELEVANT FILES:\n`;
+
+      for (const filePath of relevantFiles) {
+        const relativePath = path.relative(this.projectRoot, filePath);
+
+        if (fs.existsSync(filePath)) {
+          try {
+            const content = fs.readFileSync(filePath, "utf-8");
+            const lines = content.split("\n");
+            const indexedLines = lines.map(
+              (line, index) => `${index}: ${line}`
+            );
+
+            context += `\n=== ${relativePath} ===\n`;
+            context += indexedLines.join("\n") + "\n";
+          } catch (error) {
+            context += `\n=== ${relativePath} ===\n// Error reading file: ${error.message}\n`;
+          }
+        }
+      }
     }
 
-    if (projectInfo.missingDevPackages.length > 0) {
-      context += `Missing dev packages: ${projectInfo.missingDevPackages.join(
-        ", "
-      )}\n`;
-    }
-
-    // Add file structure
-    const files = Array.from(this.fileContextMap.entries()).map(
-      ([path, context]) => ({
-        path: path.replace(this.projectRoot, ""),
-        description: context.description,
-      })
+    // Add project structure summary
+    context += `\nPROJECT STRUCTURE:\n`;
+    const allFiles = Array.from(this.fileContextMap.keys()).map((f) =>
+      path.relative(this.projectRoot, f)
     );
+    context += allFiles.slice(0, 20).join("\n");
 
-    context += `\nEXISTING FILES:\n`;
-    files.forEach((f) => {
-      context += `${f.path}: ${f.description}\n`;
-    });
+    if (allFiles.length > 20) {
+      context += `\n... and ${allFiles.length - 20} more files`;
+    }
+
+    if (this.debug) {
+      console.log(
+        colors.gray(`  Enhanced context length: ${context.length} characters`)
+      );
+      console.log(
+        colors.gray(`  Included ${relevantFiles.length} relevant files`)
+      );
+    }
 
     return context;
+  }
+
+  private findAllSourceFiles(dir: string): string[] {
+    const files: string[] = [];
+    const extensions = [
+      ".ts",
+      ".tsx",
+      ".js",
+      ".jsx",
+      ".vue",
+      ".svelte",
+      ".json",
+    ];
+
+    if (!fs.existsSync(dir)) return files;
+
+    const items = fs.readdirSync(dir);
+    for (const item of items) {
+      const fullPath = path.join(dir, item);
+      const stat = fs.statSync(fullPath);
+
+      if (
+        stat.isDirectory() &&
+        !item.startsWith(".") &&
+        item !== "node_modules" &&
+        item !== "dist"
+      ) {
+        files.push(...this.findAllSourceFiles(fullPath));
+      } else if (extensions.some((ext) => item.endsWith(ext))) {
+        files.push(fullPath);
+      }
+    }
+    return files;
   }
 
   private async getAIActionPlan(
@@ -705,6 +910,25 @@ FILE GUIDELINES:
     } catch {
       return [];
     }
+  }
+
+  private extractFilePathsFromRequest(request: string): string[] {
+    // Extract file paths mentioned in the request
+    const patterns = [
+      /[\w\/\-\.]+\.tsx?/g,
+      /[\w\/\-\.]+\.jsx?/g,
+      /src\/[\w\/\-\.]+/g,
+    ];
+    const matches: string[] = [];
+
+    for (const pattern of patterns) {
+      const found = request.match(pattern) || [];
+      matches.push(...found);
+    }
+
+    return matches
+      .map((p) => path.resolve(this.projectRoot, p))
+      .filter((p) => fs.existsSync(p));
   }
 
   private extractFilePathsFromTree(tree: any): string[] {
