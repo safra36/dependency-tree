@@ -8,6 +8,7 @@ import { AnthropicService } from "./anthropic-service";
 import { ConfigManager } from "./config-manager";
 import { ShellExecutor } from "./shell-executor";
 import { ProjectAnalyzer } from "./project-analyzer";
+import { SyntaxChecker } from "./syntax-checker";
 import colors from "./colors";
 
 interface FileContext {
@@ -28,7 +29,7 @@ interface ActionInstruction {
   edits?: Array<{
     startIndex: number;
     endIndex: number;
-    newContent: string[];
+    newContent: string[] | string;
     description: string;
   }>;
   // Command operations
@@ -53,6 +54,7 @@ class AICodeAgent {
   private configManager: ConfigManager;
   private shellExecutor: ShellExecutor;
   private projectAnalyzer: ProjectAnalyzer;
+  private syntaxChecker: SyntaxChecker;
   private debug: boolean;
 
   constructor(
@@ -81,6 +83,7 @@ class AICodeAgent {
       debug: this.debug,
     });
     this.projectAnalyzer = new ProjectAnalyzer(this.projectRoot, this.debug);
+    this.syntaxChecker = new SyntaxChecker(this.projectRoot, this.debug);
 
     const apiKey = this.configManager.getAnthropicApiKey();
     if (!apiKey) {
@@ -190,7 +193,11 @@ class AICodeAgent {
       // 5. Execute action plan
       const changes = await this.executeActionPlan(actionPlan);
 
-      // 6. Post-execution validation
+      // 6. Check syntax errors immediately
+      console.log("🔍 Checking syntax...");
+      await this.checkSyntaxErrors();
+
+      // 7. Post-execution validation
       await this.scanProject();
       const compilationResult = this.compileTypeScript();
 
@@ -493,39 +500,6 @@ USER REQUEST: ${request}
     return context;
   }
 
-  private findAllSourceFiles(dir: string): string[] {
-    const files: string[] = [];
-    const extensions = [
-      ".ts",
-      ".tsx",
-      ".js",
-      ".jsx",
-      ".vue",
-      ".svelte",
-      ".json",
-    ];
-
-    if (!fs.existsSync(dir)) return files;
-
-    const items = fs.readdirSync(dir);
-    for (const item of items) {
-      const fullPath = path.join(dir, item);
-      const stat = fs.statSync(fullPath);
-
-      if (
-        stat.isDirectory() &&
-        !item.startsWith(".") &&
-        item !== "node_modules" &&
-        item !== "dist"
-      ) {
-        files.push(...this.findAllSourceFiles(fullPath));
-      } else if (extensions.some((ext) => item.endsWith(ext))) {
-        files.push(fullPath);
-      }
-    }
-    return files;
-  }
-
   private async getAIActionPlan(
     request: string,
     projectContext: string
@@ -676,6 +650,9 @@ FILE GUIDELINES:
 
     fs.writeFileSync(filePath, content);
 
+    // Check syntax immediately after creation
+    await this.checkFileSyntax(filePath);
+
     // Add to context map
     this.fileContextMap.set(filePath, {
       path: filePath,
@@ -700,15 +677,21 @@ FILE GUIDELINES:
     const lines = content.split("\n");
 
     for (const edit of action.edits!.reverse()) {
+      const editContent = Array.isArray(edit.newContent)
+        ? edit.newContent
+        : [edit.newContent];
       const newLines = [
         ...lines.slice(0, edit.startIndex),
-        ...edit.newContent,
+        ...editContent,
         ...lines.slice(edit.endIndex + 1),
       ];
       lines.splice(0, lines.length, ...newLines);
     }
 
     fs.writeFileSync(filePath, lines.join("\n"));
+
+    // Check syntax immediately after modification
+    await this.checkFileSyntax(filePath);
 
     // Update context map
     const fileContext = this.fileContextMap.get(filePath);
@@ -720,7 +703,103 @@ FILE GUIDELINES:
     return `📝 Modified ${action.file}: ${action.description}`;
   }
 
-  // Rest of the methods remain the same as the previous version
+  private async checkSyntaxErrors(): Promise<void> {
+    const errors = await this.syntaxChecker.checkProject();
+
+    if (errors.length > 0) {
+      console.log(colors.red(`⚠️  Found ${errors.length} syntax errors:`));
+      this.syntaxChecker.printErrors(errors);
+
+      // Show summary for large error counts
+      if (errors.length > 10) {
+        const summary = this.syntaxChecker.getErrorSummary(errors);
+        console.log(colors.yellow("\n📊 Error Summary:"));
+        console.log(colors.gray(`  Files affected: ${summary.fileCount}`));
+        console.log(
+          colors.gray(
+            `  Errors: ${summary.errorCount}, Warnings: ${summary.warningCount}`
+          )
+        );
+
+        if (summary.mostCommonErrors.length > 0) {
+          console.log(colors.gray("  Most common issues:"));
+          summary.mostCommonErrors.forEach((e) =>
+            console.log(colors.gray(`    ${e.message} (${e.count}x)`))
+          );
+        }
+      }
+    } else {
+      console.log(colors.green("✅ No syntax errors found"));
+    }
+  }
+
+  async checkFileSyntax(filePath: string): Promise<boolean> {
+    const errors = await this.syntaxChecker.checkFile(filePath);
+    if (errors.length > 0) {
+      console.log(
+        colors.yellow(
+          `⚠️  Syntax issues in ${path.relative(this.projectRoot, filePath)}:`
+        )
+      );
+      this.syntaxChecker.printErrors(errors);
+      return false;
+    }
+    return true;
+  }
+
+  private findAllSourceFiles(dir: string): string[] {
+    const files: string[] = [];
+    const extensions = [
+      ".ts",
+      ".tsx",
+      ".js",
+      ".jsx",
+      ".vue",
+      ".svelte",
+      ".json",
+    ];
+
+    if (!fs.existsSync(dir)) return files;
+
+    const items = fs.readdirSync(dir);
+    for (const item of items) {
+      const fullPath = path.join(dir, item);
+      const stat = fs.statSync(fullPath);
+
+      if (
+        stat.isDirectory() &&
+        !item.startsWith(".") &&
+        item !== "node_modules" &&
+        item !== "dist"
+      ) {
+        files.push(...this.findAllSourceFiles(fullPath));
+      } else if (extensions.some((ext) => item.endsWith(ext))) {
+        files.push(fullPath);
+      }
+    }
+    return files;
+  }
+
+  private extractFilePathsFromRequest(request: string): string[] {
+    // Extract file paths mentioned in the request
+    const patterns = [
+      /[\w\/\-\.]+\.tsx?/g,
+      /[\w\/\-\.]+\.jsx?/g,
+      /src\/[\w\/\-\.]+/g,
+    ];
+    const matches: string[] = [];
+
+    for (const pattern of patterns) {
+      const found = request.match(pattern) || [];
+      matches.push(...found);
+    }
+
+    return matches
+      .map((p) => path.resolve(this.projectRoot, p))
+      .filter((p) => fs.existsSync(p));
+  }
+
+  // Rest of the helper methods
   private async scanProject(): Promise<void> {
     const tsFiles = this.findTypeScriptFiles(this.projectRoot);
     this.fileContextMap.clear();
@@ -834,7 +913,23 @@ FILE GUIDELINES:
     };
   }
 
-  // Helper methods
+  private async buildEditingContext(
+    targetFiles: string[],
+    request: string
+  ): Promise<string> {
+    let context = "";
+    for (const filePath of targetFiles) {
+      const relativePath = path.relative(this.projectRoot, filePath);
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath, "utf-8");
+        const lines = content.split("\n");
+        const indexedLines = lines.map((line, index) => `${index}: ${line}`);
+        context += `\n=== ${relativePath} ===\n${indexedLines.join("\n")}\n`;
+      }
+    }
+    return context;
+  }
+
   private findTsConfig(): string {
     const configPath = path.join(this.projectRoot, "tsconfig.json");
     return fs.existsSync(configPath) ? configPath : "";
@@ -912,25 +1007,6 @@ FILE GUIDELINES:
     }
   }
 
-  private extractFilePathsFromRequest(request: string): string[] {
-    // Extract file paths mentioned in the request
-    const patterns = [
-      /[\w\/\-\.]+\.tsx?/g,
-      /[\w\/\-\.]+\.jsx?/g,
-      /src\/[\w\/\-\.]+/g,
-    ];
-    const matches: string[] = [];
-
-    for (const pattern of patterns) {
-      const found = request.match(pattern) || [];
-      matches.push(...found);
-    }
-
-    return matches
-      .map((p) => path.resolve(this.projectRoot, p))
-      .filter((p) => fs.existsSync(p));
-  }
-
   private extractFilePathsFromTree(tree: any): string[] {
     const paths: string[] = [];
     const traverse = (node: any) => {
@@ -943,23 +1019,6 @@ FILE GUIDELINES:
     };
     traverse(tree);
     return paths;
-  }
-
-  private async buildEditingContext(
-    targetFiles: string[],
-    request: string
-  ): Promise<string> {
-    let context = "";
-    for (const filePath of targetFiles) {
-      const relativePath = path.relative(this.projectRoot, filePath);
-      if (fs.existsSync(filePath)) {
-        const content = fs.readFileSync(filePath, "utf-8");
-        const lines = content.split("\n");
-        const indexedLines = lines.map((line, index) => `${index}: ${line}`);
-        context += `\n=== ${relativePath} ===\n${indexedLines.join("\n")}\n`;
-      }
-    }
-    return context;
   }
 }
 

@@ -69,7 +69,7 @@ export class SyntaxChecker {
       const content = fs.readFileSync(filePath, "utf-8");
       const relativePath = path.relative(this.projectRoot, filePath);
 
-      // Create a temporary TypeScript program for this file
+      // Create compiler options
       const compilerOptions: ts.CompilerOptions = {
         target: ts.ScriptTarget.ES2020,
         module: ts.ModuleKind.ESNext,
@@ -94,11 +94,13 @@ export class SyntaxChecker {
           : ts.ScriptKind.TS
       );
 
-      // Get syntax errors from the source file
-      const syntaxDiagnostics = sourceFile.parseDiagnostics || [];
-
-      // Create a program to get semantic errors
+      // Create a program to get both syntax and semantic diagnostics
       const program = ts.createProgram([filePath], compilerOptions);
+
+      // Get syntax diagnostics
+      const syntaxDiagnostics = program.getSyntacticDiagnostics(sourceFile);
+
+      // Get semantic diagnostics
       const semanticDiagnostics = program.getSemanticDiagnostics(sourceFile);
 
       // Combine all diagnostics
@@ -290,7 +292,18 @@ export class SyntaxChecker {
           true
         );
 
-        return (sourceFile.parseDiagnostics?.length || 0) === 0;
+        // Create a minimal program to check for syntax errors
+        const compilerOptions: ts.CompilerOptions = {
+          target: ts.ScriptTarget.ES2020,
+          module: ts.ModuleKind.ESNext,
+          noEmit: true,
+          skipLibCheck: true,
+        };
+
+        const program = ts.createProgram([filePath], compilerOptions);
+        const syntaxDiagnostics = program.getSyntacticDiagnostics(sourceFile);
+
+        return syntaxDiagnostics.length === 0;
       }
 
       return true;
