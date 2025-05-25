@@ -6,6 +6,8 @@ import * as ts from "typescript";
 import { DependencyExtractor } from "./dependancy-tree";
 import { AnthropicService } from "./anthropic-service";
 import { ConfigManager } from "./config-manager";
+import { ShellExecutor } from "./shell-executor";
+import { ProjectAnalyzer } from "./project-analyzer";
 import colors from "./colors";
 
 interface FileContext {
@@ -17,16 +19,22 @@ interface FileContext {
   exists: boolean;
 }
 
-interface EditInstruction {
-  file: string;
-  analysis: string;
+interface ActionInstruction {
+  type: "file" | "command";
+  description: string;
+  // File operations
+  file?: string;
   createFile?: boolean;
-  edits: Array<{
+  edits?: Array<{
     startIndex: number;
     endIndex: number;
     newContent: string[];
     description: string;
   }>;
+  // Command operations
+  command?: string;
+  workingDir?: string;
+  continueOnError?: boolean;
 }
 
 interface CompilationResult {
@@ -43,6 +51,8 @@ class AICodeAgent {
   private tsProgram: ts.Program | null = null;
   private anthropicService: AnthropicService;
   private configManager: ConfigManager;
+  private shellExecutor: ShellExecutor;
+  private projectAnalyzer: ProjectAnalyzer;
   private debug: boolean;
 
   constructor(
@@ -57,9 +67,8 @@ class AICodeAgent {
     this.debug = options.debug || false;
 
     if (this.debug) {
-      console.log(colors.cyan("\n🔧 [DEBUG] AICodeAgent constructor"));
+      console.log(colors.cyan("\n🔧 [DEBUG] Enhanced AICodeAgent constructor"));
       console.log(colors.gray(`  Project root: ${this.projectRoot}`));
-      console.log(colors.gray(`  Options: ${JSON.stringify(options)}`));
     }
 
     this.dependencyExtractor = new DependencyExtractor({
@@ -68,19 +77,14 @@ class AICodeAgent {
     });
     this.tsConfigPath = this.findTsConfig();
     this.configManager = ConfigManager.createFromEnv();
-
-    if (this.debug) {
-      console.log(
-        colors.gray(`  TypeScript config: ${this.tsConfigPath || "not found"}`)
-      );
-      console.log(colors.gray(`  Config manager initialized`));
-    }
+    this.shellExecutor = new ShellExecutor(this.projectRoot, {
+      debug: this.debug,
+    });
+    this.projectAnalyzer = new ProjectAnalyzer(this.projectRoot, this.debug);
 
     const apiKey = this.configManager.getAnthropicApiKey();
     if (!apiKey) {
-      throw new Error(
-        "Anthropic API key is required. Set ANTHROPIC_API_KEY environment variable or configure it via /config command"
-      );
+      throw new Error("Anthropic API key is required");
     }
 
     this.anthropicService = new AnthropicService({
@@ -92,19 +96,22 @@ class AICodeAgent {
     });
 
     if (this.debug) {
-      console.log(colors.green("✅ AICodeAgent constructor completed"));
+      console.log(
+        colors.green("✅ Enhanced AICodeAgent constructor completed")
+      );
     }
   }
 
   async initialize(): Promise<void> {
     if (this.debug) {
       console.log(
-        colors.cyan("\n🔧 [DEBUG] AICodeAgent.initialize() starting")
+        colors.cyan("\n🔧 [DEBUG] Enhanced AICodeAgent.initialize() starting")
       );
     }
 
-    console.log("🤖 Initializing AI Code Agent...");
+    console.log("🤖 Initializing Enhanced AI Code Agent...");
 
+    // Test AI connection
     console.log("🔗 Testing AI connection...");
     const connected = await this.anthropicService.testConnection();
     if (!connected) {
@@ -114,30 +121,29 @@ class AICodeAgent {
     }
     console.log("✅ AI connection established");
 
-    if (this.debug) {
-      console.log(colors.cyan("🔧 [DEBUG] Starting project scan..."));
-    }
-    await this.scanProject();
+    // Analyze project
+    console.log("🔍 Analyzing project structure...");
+    const projectInfo = await this.projectAnalyzer.analyzeProject();
 
-    if (this.debug) {
-      console.log(colors.cyan("🔧 [DEBUG] Building TypeScript program..."));
+    console.log(`📦 Project type: ${projectInfo.type}`);
+    if (projectInfo.framework) {
+      console.log(`🚀 Framework: ${projectInfo.framework}`);
     }
+    console.log(`📋 Package manager: ${projectInfo.packageManager}`);
+
+    // Auto-setup if needed
+    if (projectInfo.needsInit || projectInfo.missingPackages.length > 0) {
+      console.log(
+        "⚙️  Project needs setup. Use 'setup project' to initialize."
+      );
+    }
+
+    await this.scanProject();
     this.buildTSProgram();
 
-    console.log(`✅ Agent initialized with ${this.fileContextMap.size} files`);
-
-    if (this.debug) {
-      console.log(colors.cyan("🔧 [DEBUG] File context map contents:"));
-      for (const [filePath, context] of this.fileContextMap) {
-        console.log(
-          colors.gray(
-            `  ${path.relative(this.projectRoot, filePath)}: ${
-              context.description
-            }`
-          )
-        );
-      }
-    }
+    console.log(
+      `✅ Enhanced agent initialized with ${this.fileContextMap.size} files`
+    );
   }
 
   async handleUserRequest(request: string): Promise<{
@@ -146,79 +152,48 @@ class AICodeAgent {
     errors?: string[];
   }> {
     if (this.debug) {
-      console.log(colors.cyan("\n🔧 [DEBUG] handleUserRequest() starting"));
+      console.log(
+        colors.cyan("\n🔧 [DEBUG] Enhanced handleUserRequest() starting")
+      );
       console.log(colors.gray(`  Request: "${request}"`));
     }
 
     console.log(`📝 Processing request: ${request}`);
 
     try {
-      // 1. Analyze request and identify target files
-      if (this.debug) {
-        console.log(
-          colors.cyan("🔧 [DEBUG] Step 1: Identifying target files...")
-        );
+      // Check for setup/project initialization requests
+      if (this.isSetupRequest(request)) {
+        return await this.handleProjectSetup(request);
       }
-      const targetFiles = await this.identifyTargetFiles(request);
-      console.log(`🎯 Target files: ${targetFiles.join(", ")}`);
 
-      // 2. Build context
-      if (this.debug) {
-        console.log(
-          colors.cyan("🔧 [DEBUG] Step 2: Building editing context...")
-        );
-      }
-      const context = await this.buildEditingContext(targetFiles, request);
+      // 1. Analyze project state and build context
+      const projectInfo = await this.projectAnalyzer.analyzeProject();
+      const projectContext = this.buildProjectContext(projectInfo);
 
-      // 3. Get AI suggestions
-      if (this.debug) {
-        console.log(
-          colors.cyan("🔧 [DEBUG] Step 3: Getting AI edit instructions...")
-        );
-      }
-      const editInstructions = await this.getAIEditInstructions(
-        request,
-        context
-      );
+      // 2. Get AI action plan
+      const actionPlan = await this.getAIActionPlan(request, projectContext);
 
-      // 4. Apply edits
-      if (this.debug) {
-        console.log(colors.cyan("🔧 [DEBUG] Step 4: Applying edits..."));
-      }
-      const changes = await this.applyEdits(editInstructions);
+      // 3. Execute action plan
+      const changes = await this.executeActionPlan(actionPlan);
 
-      // 5. Update project scan
-      if (this.debug) {
-        console.log(colors.cyan("🔧 [DEBUG] Step 5: Rescanning project..."));
-      }
+      // 4. Post-execution validation
       await this.scanProject();
-
-      // 6. Compile and check errors
-      if (this.debug) {
-        console.log(colors.cyan("🔧 [DEBUG] Step 6: Compiling TypeScript..."));
-      }
       const compilationResult = this.compileTypeScript();
 
-      if (!compilationResult.success) {
+      if (!compilationResult.success && compilationResult.errors.length > 0) {
         console.log("🔧 Compilation errors detected, attempting fixes...");
-        if (this.debug) {
-          console.log(colors.cyan("🔧 [DEBUG] Starting error fix process..."));
-        }
         const fixResult = await this.fixCompilationErrors(
           compilationResult.errors
         );
         return fixResult;
       }
 
-      if (this.debug) {
-        console.log(colors.green("✅ Request completed successfully"));
-      }
-
       return { success: true, changes };
     } catch (error) {
       if (this.debug) {
-        console.log(colors.red(`🔧 [DEBUG] Request failed: ${error.message}`));
-        console.log(colors.red(`  Stack: ${error.stack}`));
+        console.log(
+          colors.red(`🔧 [DEBUG] Enhanced request failed: ${error.message}`)
+        );
       }
       return {
         success: false,
@@ -228,34 +203,324 @@ class AICodeAgent {
     }
   }
 
-  private async scanProject(): Promise<void> {
-    if (this.debug) {
-      console.log(colors.cyan("🔧 [DEBUG] scanProject() starting"));
+  private isSetupRequest(request: string): boolean {
+    const setupKeywords = [
+      "setup",
+      "initialize",
+      "init",
+      "install packages",
+      "create project",
+      "bootstrap",
+      "scaffold",
+      "configure",
+    ];
+    return setupKeywords.some((keyword) =>
+      request.toLowerCase().includes(keyword)
+    );
+  }
+
+  private async handleProjectSetup(request: string): Promise<{
+    success: boolean;
+    changes: string[];
+    errors?: string[];
+  }> {
+    console.log("🛠️  Handling project setup...");
+
+    const setupPlan = await this.projectAnalyzer.generateProjectSetupPlan();
+    const changes: string[] = [];
+
+    for (const step of setupPlan.setupSteps) {
+      try {
+        if (step.type === "command") {
+          console.log(`🔨 Executing: ${step.command}`);
+          const result = await this.shellExecutor.executeCommand(step.command!);
+
+          if (result.success) {
+            changes.push(`✅ ${step.description}`);
+            if (result.stdout) {
+              console.log(
+                colors.gray(result.stdout.split("\n").slice(0, 3).join("\n"))
+              );
+            }
+          } else {
+            console.log(colors.red(`❌ Command failed: ${result.stderr}`));
+            changes.push(`❌ ${step.description}: ${result.stderr}`);
+          }
+        } else if (step.type === "file") {
+          console.log(`📄 Creating: ${step.filePath}`);
+          const filePath = path.join(this.projectRoot, step.filePath!);
+
+          // Ensure directory exists
+          const dir = path.dirname(filePath);
+          if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+          }
+
+          fs.writeFileSync(filePath, step.content!);
+          changes.push(`📄 Created ${step.filePath}`);
+        }
+      } catch (error) {
+        console.log(colors.red(`❌ Setup step failed: ${error.message}`));
+        changes.push(`❌ ${step.description}: ${error.message}`);
+      }
     }
 
-    const tsFiles = this.findTypeScriptFiles(this.projectRoot);
-
-    if (this.debug) {
-      console.log(colors.gray(`  Found ${tsFiles.length} TypeScript files:`));
-      tsFiles.forEach((file) => {
+    // Update package.json scripts
+    if (Object.keys(setupPlan.analysis.recommendedScripts).length > 0) {
+      try {
+        const updated = await this.shellExecutor.updatePackageJson({
+          scripts: setupPlan.analysis.recommendedScripts,
+        });
+        if (updated) {
+          changes.push("📝 Updated package.json scripts");
+        }
+      } catch (error) {
         console.log(
-          colors.gray(`    ${path.relative(this.projectRoot, file)}`)
+          colors.red(`⚠️  Could not update package.json: ${error.message}`)
         );
-      });
+      }
     }
 
-    // Clear existing context and rebuild
+    return { success: true, changes };
+  }
+
+  private buildProjectContext(projectInfo: any): string {
+    let context = `PROJECT CONTEXT:
+Type: ${projectInfo.type}
+Framework: ${projectInfo.framework || "none"}
+Package Manager: ${projectInfo.packageManager}
+Has package.json: ${projectInfo.hasPackageJson}
+
+`;
+
+    if (projectInfo.missingPackages.length > 0) {
+      context += `Missing packages: ${projectInfo.missingPackages.join(
+        ", "
+      )}\n`;
+    }
+
+    if (projectInfo.missingDevPackages.length > 0) {
+      context += `Missing dev packages: ${projectInfo.missingDevPackages.join(
+        ", "
+      )}\n`;
+    }
+
+    // Add file structure
+    const files = Array.from(this.fileContextMap.entries()).map(
+      ([path, context]) => ({
+        path: path.replace(this.projectRoot, ""),
+        description: context.description,
+      })
+    );
+
+    context += `\nEXISTING FILES:\n`;
+    files.forEach((f) => {
+      context += `${f.path}: ${f.description}\n`;
+    });
+
+    return context;
+  }
+
+  private async getAIActionPlan(
+    request: string,
+    projectContext: string
+  ): Promise<ActionInstruction[]> {
+    const prompt = `You are an autonomous coding agent that can create files and execute shell commands.
+
+USER REQUEST: ${request}
+
+${projectContext}
+
+Analyze the request and provide a comprehensive action plan. You can:
+1. Execute shell commands (npm install, npm init, etc.)
+2. Create/modify files
+3. Install packages
+4. Initialize projects
+
+Respond with JSON array of actions:
+
+[
+  {
+    "type": "command",
+    "description": "Install React dependencies",
+    "command": "npm install react react-dom",
+    "workingDir": ".",
+    "continueOnError": false
+  },
+  {
+    "type": "file",
+    "description": "Create main App component",
+    "file": "src/App.tsx",
+    "createFile": true,
+    "edits": [
+      {
+        "startIndex": 0,
+        "endIndex": -1,
+        "newContent": ["import React from 'react';", "", "export default function App() {", "  return <div>Hello World</div>;", "}"],
+        "description": "Create React App component"
+      }
+    ]
+  }
+]
+
+CRITICAL JSON ESCAPING RULES:
+- Escape ALL double quotes in code/strings as \"
+- Escape backslashes as \\
+- Example: "import React from \"react\";" becomes "import React from \\\"react\\\";"
+
+COMMAND GUIDELINES:
+- Use npm, yarn, pnpm, or detected package manager
+- Install packages before creating files that use them
+- Create directories if needed (mkdir)
+- Run build/compile commands to verify setup
+
+FILE GUIDELINES:
+- Create proper TypeScript/React/Vue/Svelte files
+- Include proper imports and exports
+- Follow project conventions
+- Add type definitions`;
+
+    const response = await this.anthropicService.generateCodeEdits(prompt);
+
+    try {
+      const jsonMatch = response.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+      return JSON.parse(response);
+    } catch (error) {
+      throw new Error(`Failed to parse AI action plan: ${error.message}`);
+    }
+  }
+
+  private async executeActionPlan(
+    actions: ActionInstruction[]
+  ): Promise<string[]> {
+    const changes: string[] = [];
+
+    if (this.debug) {
+      console.log(
+        colors.cyan(`🔧 [DEBUG] Executing ${actions.length} actions`)
+      );
+    }
+
+    for (const action of actions) {
+      try {
+        if (action.type === "command") {
+          console.log(`🔨 ${action.description}`);
+          const result = await this.shellExecutor.executeCommand(
+            action.command!,
+            { cwd: action.workingDir }
+          );
+
+          if (result.success) {
+            changes.push(`✅ ${action.description}`);
+            if (result.stdout && this.debug) {
+              console.log(
+                colors.gray(result.stdout.split("\n").slice(0, 5).join("\n"))
+              );
+            }
+          } else {
+            const errorMsg = `❌ ${action.description}: ${result.stderr}`;
+            console.log(colors.red(errorMsg));
+
+            if (!action.continueOnError) {
+              throw new Error(errorMsg);
+            }
+            changes.push(errorMsg);
+          }
+        } else if (action.type === "file") {
+          console.log(`📄 ${action.description}`);
+
+          if (action.createFile) {
+            const result = await this.createFile(action);
+            changes.push(result);
+          } else {
+            const result = await this.modifyFile(action);
+            changes.push(result);
+          }
+        }
+      } catch (error) {
+        const errorMsg = `❌ Action failed: ${error.message}`;
+        console.log(colors.red(errorMsg));
+        changes.push(errorMsg);
+
+        if (!action.continueOnError) {
+          break;
+        }
+      }
+    }
+
+    return changes;
+  }
+
+  private async createFile(action: ActionInstruction): Promise<string> {
+    const filePath = path.resolve(this.projectRoot, action.file!);
+
+    // Ensure directory exists
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    const edit = action.edits![0];
+    // Handle both string and array formats
+    const content = Array.isArray(edit.newContent)
+      ? edit.newContent.join("\n")
+      : edit.newContent;
+
+    fs.writeFileSync(filePath, content);
+
+    // Add to context map
+    this.fileContextMap.set(filePath, {
+      path: filePath,
+      content,
+      description: this.generateFileDescription(content),
+      lastModified: Date.now(),
+      dependencies: [],
+      exists: true,
+    });
+
+    return `📄 Created ${action.file}: ${action.description}`;
+  }
+
+  private async modifyFile(action: ActionInstruction): Promise<string> {
+    const filePath = path.resolve(this.projectRoot, action.file!);
+
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`File ${filePath} does not exist`);
+    }
+
+    const content = fs.readFileSync(filePath, "utf-8");
+    const lines = content.split("\n");
+
+    for (const edit of action.edits!.reverse()) {
+      const newLines = [
+        ...lines.slice(0, edit.startIndex),
+        ...edit.newContent,
+        ...lines.slice(edit.endIndex + 1),
+      ];
+      lines.splice(0, lines.length, ...newLines);
+    }
+
+    fs.writeFileSync(filePath, lines.join("\n"));
+
+    // Update context map
+    const fileContext = this.fileContextMap.get(filePath);
+    if (fileContext) {
+      fileContext.content = lines.join("\n");
+      fileContext.lastModified = Date.now();
+    }
+
+    return `📝 Modified ${action.file}: ${action.description}`;
+  }
+
+  // Rest of the methods remain the same as the previous version
+  private async scanProject(): Promise<void> {
+    const tsFiles = this.findTypeScriptFiles(this.projectRoot);
     this.fileContextMap.clear();
 
     for (const filePath of tsFiles) {
-      if (this.debug) {
-        console.log(
-          colors.gray(
-            `  Processing: ${path.relative(this.projectRoot, filePath)}`
-          )
-        );
-      }
-
       try {
         const content = fs.readFileSync(filePath, "utf-8");
         const description = this.generateFileDescription(content);
@@ -269,572 +534,16 @@ class AICodeAgent {
           dependencies,
           exists: true,
         });
-
-        if (this.debug) {
-          console.log(colors.gray(`    Description: ${description}`));
-          console.log(colors.gray(`    Dependencies: ${dependencies.length}`));
-        }
       } catch (error) {
-        const errorMsg = `⚠️ Could not process file ${filePath}: ${error.message}`;
-        console.warn(errorMsg);
-        if (this.debug) {
-          console.log(colors.red(`🔧 [DEBUG] ${errorMsg}`));
-        }
+        console.warn(`⚠️ Could not process file ${filePath}: ${error.message}`);
       }
     }
-
-    if (this.debug) {
-      console.log(
-        colors.cyan(
-          `🔧 [DEBUG] scanProject() completed, ${this.fileContextMap.size} files in context`
-        )
-      );
-    }
-  }
-
-  private async identifyTargetFiles(request: string): Promise<string[]> {
-    if (this.debug) {
-      console.log(colors.cyan("🔧 [DEBUG] identifyTargetFiles() starting"));
-    }
-
-    const fileDescriptions = Array.from(this.fileContextMap.entries()).map(
-      ([path, context]) => ({
-        path: path.replace(this.projectRoot, ""),
-        description: context.description,
-      })
-    );
-
-    if (this.debug) {
-      console.log(
-        colors.gray(`  File descriptions count: ${fileDescriptions.length}`)
-      );
-    }
-
-    const prompt = `
-Analyze this user request and identify which files should be modified or created:
-
-USER REQUEST: ${request}
-
-EXISTING FILES:
-${fileDescriptions.map((f) => `${f.path}: ${f.description}`).join("\n")}
-
-PROJECT ROOT: ${this.projectRoot}
-
-Respond with a JSON object containing:
-{
-  "existingFiles": ["relative/path/to/existing/file1", "relative/path/to/existing/file2"],
-  "newFiles": ["relative/path/to/new/file1", "relative/path/to/new/file2"],
-  "reasoning": "Brief explanation of file choices"
-}
-
-Rules for new files:
-- Use appropriate TypeScript/JavaScript extensions (.ts, .tsx, .js, .jsx)
-- Follow project structure conventions (src/, components/, services/, etc.)
-- Use descriptive, kebab-case or camelCase naming
-- Consider imports and dependencies
-
-Examples:
-- "Create UserService" → newFiles: ["src/services/user.service.ts"]
-- "Add user component" → newFiles: ["src/components/User.tsx"]
-- "Create API types" → newFiles: ["src/types/api.types.ts"]
-    `;
-
-    try {
-      const response = await this.anthropicService.generateCodeEdits(prompt);
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-
-      if (jsonMatch) {
-        const result = JSON.parse(jsonMatch[0]);
-        const allFiles = [
-          ...(result.existingFiles || []).map((p) =>
-            path.join(this.projectRoot, p)
-          ),
-          ...(result.newFiles || []).map((p) => path.join(this.projectRoot, p)),
-        ];
-
-        console.log(`💭 AI reasoning: ${result.reasoning}`);
-
-        if (this.debug) {
-          console.log(colors.cyan("🔧 [DEBUG] File identification result:"));
-          console.log(
-            colors.gray(
-              `  Existing files: ${result.existingFiles?.length || 0}`
-            )
-          );
-          console.log(
-            colors.gray(`  New files: ${result.newFiles?.length || 0}`)
-          );
-          console.log(colors.gray(`  Total target files: ${allFiles.length}`));
-          allFiles.forEach((file, i) => {
-            console.log(colors.gray(`    ${i + 1}. ${file}`));
-          });
-        }
-
-        return allFiles;
-      }
-    } catch (error) {
-      if (this.debug) {
-        console.log(
-          colors.red(
-            `🔧 [DEBUG] AI file identification failed: ${error.message}`
-          )
-        );
-      }
-      console.warn(`⚠️ AI file identification failed: ${error.message}`);
-    }
-
-    // Fallback
-    const fallbackFiles = this.extractFilePathsFromRequest(request);
-    if (this.debug) {
-      console.log(
-        colors.yellow(
-          `🔧 [DEBUG] Using fallback file extraction: ${fallbackFiles.length} files`
-        )
-      );
-    }
-    return fallbackFiles;
-  }
-
-  private async buildEditingContext(
-    targetFiles: string[],
-    request: string
-  ): Promise<string> {
-    if (this.debug) {
-      console.log(colors.cyan("🔧 [DEBUG] buildEditingContext() starting"));
-      console.log(colors.gray(`  Target files: ${targetFiles.length}`));
-    }
-
-    let context = "";
-
-    for (const filePath of targetFiles) {
-      const relativePath = path.relative(this.projectRoot, filePath);
-
-      if (this.debug) {
-        console.log(colors.gray(`  Processing: ${relativePath}`));
-      }
-
-      if (fs.existsSync(filePath)) {
-        // Existing file
-        if (this.debug) {
-          console.log(
-            colors.gray(`    File exists, analyzing dependencies...`)
-          );
-        }
-
-        try {
-          const tree = await this.dependencyExtractor.analyze(filePath);
-          const relatedFiles = this.extractFilesFromTree(tree);
-
-          context += `\n=== EXISTING FILE: ${relativePath} ===\n`;
-          for (const file of relatedFiles.slice(0, 5)) {
-            const lines = file.content.split("\n");
-            const indexedLines = lines.map(
-              (line, index) => `${index}: ${line}`
-            );
-            context += `\n--- ${file.path} ---\n${indexedLines.join("\n")}\n`;
-          }
-
-          if (this.debug) {
-            console.log(
-              colors.gray(
-                `    Added ${relatedFiles.length} related files to context`
-              )
-            );
-          }
-        } catch (error) {
-          if (this.debug) {
-            console.log(
-              colors.yellow(
-                `    Dependency analysis failed, using direct content: ${error.message}`
-              )
-            );
-          }
-
-          // Fallback to direct file content
-          const content = fs.readFileSync(filePath, "utf-8");
-          const lines = content.split("\n");
-          const indexedLines = lines.map((line, index) => `${index}: ${line}`);
-          context += `\n=== EXISTING FILE: ${relativePath} ===\n${indexedLines.join(
-            "\n"
-          )}\n`;
-        }
-      } else {
-        // New file
-        if (this.debug) {
-          console.log(colors.gray(`    File doesn't exist, will be created`));
-        }
-
-        context += `\n=== NEW FILE TO CREATE: ${relativePath} ===\n`;
-        context += `// This file does not exist yet and should be created\n`;
-        context += `// Directory: ${path.dirname(filePath)}\n`;
-        context += `// File purpose: Based on user request "${request}"\n`;
-
-        // Add nearby existing files for context
-        const dir = path.dirname(filePath);
-        if (fs.existsSync(dir)) {
-          const siblings = fs
-            .readdirSync(dir)
-            .filter(
-              (f) =>
-                f.endsWith(".ts") ||
-                f.endsWith(".tsx") ||
-                f.endsWith(".js") ||
-                f.endsWith(".jsx")
-            )
-            .slice(0, 2);
-
-          if (this.debug) {
-            console.log(
-              colors.gray(
-                `    Found ${siblings.length} sibling files for context`
-              )
-            );
-          }
-
-          for (const sibling of siblings) {
-            const siblingPath = path.join(dir, sibling);
-            try {
-              const content = fs.readFileSync(siblingPath, "utf-8");
-              const lines = content.split("\n").slice(0, 20);
-              context += `\n--- NEARBY FILE: ${path.relative(
-                this.projectRoot,
-                siblingPath
-              )} ---\n`;
-              context +=
-                lines.map((line, index) => `${index}: ${line}`).join("\n") +
-                "\n";
-            } catch (error) {
-              if (this.debug) {
-                console.log(
-                  colors.gray(
-                    `      Could not read sibling ${sibling}: ${error.message}`
-                  )
-                );
-              }
-            }
-          }
-        }
-      }
-    }
-
-    if (this.debug) {
-      console.log(colors.cyan(`🔧 [DEBUG] buildEditingContext() completed`));
-      console.log(
-        colors.gray(`  Context length: ${context.length} characters`)
-      );
-    }
-
-    return context;
-  }
-
-  private async getAIEditInstructions(
-    request: string,
-    context: string
-  ): Promise<EditInstruction[]> {
-    if (this.debug) {
-      console.log(colors.cyan("🔧 [DEBUG] getAIEditInstructions() starting"));
-      console.log(
-        colors.gray(`  Context length: ${context.length} characters`)
-      );
-    }
-
-    const prompt = `
-You are a code editor AI that can both modify existing files and create new files.
-
-USER REQUEST: ${request}
-
-CODE CONTEXT:
-${context}
-
-Instructions:
-1. For EXISTING files: Provide line-by-line edits using startIndex/endIndex
-2. For NEW files: Use startIndex: 0, endIndex: -1, and provide complete file content
-3. Always include proper imports, exports, and TypeScript types
-4. Follow project conventions and best practices
-
-Respond with JSON array of edit instructions:
-
-[
-  {
-    "file": "relative/path/to/file",
-    "analysis": "What changes/creation are needed",
-    "createFile": true/false,
-    "edits": [
-      {
-        "startIndex": <number>,
-        "endIndex": <number>, 
-        "newContent": ["line 1", "line 2", "..."],
-        "description": "What this accomplishes"
-      }
-    ]
-  }
-]
-
-Rules:
-- For new files: createFile: true, startIndex: 0, endIndex: -1
-- For existing files: createFile: false, use actual line numbers
-- Include complete, functional code
-- Add proper TypeScript types and interfaces
-- Consider imports and dependencies
-- Follow naming conventions
-
-Example new file:
-{
-  "file": "src/services/user.service.ts",
-  "analysis": "Creating new UserService with CRUD operations",
-  "createFile": true,
-  "edits": [{
-    "startIndex": 0,
-    "endIndex": -1,
-    "newContent": [
-      "import { User } from '../types/user.types';",
-      "",
-      "export class UserService {",
-      "  async getUser(id: string): Promise<User> {",
-      "    // Implementation",
-      "  }",
-      "}"
-    ],
-    "description": "Create complete UserService class"
-  }]
-}
-    `;
-
-    const response = await this.anthropicService.generateCodeEdits(prompt);
-
-    try {
-      const jsonMatch = response.match(/\[[\s\S]*\]/);
-      let instructions: EditInstruction[];
-
-      if (jsonMatch) {
-        instructions = JSON.parse(jsonMatch[0]);
-      } else {
-        instructions = JSON.parse(response);
-      }
-
-      if (this.debug) {
-        console.log(
-          colors.cyan("🔧 [DEBUG] AI edit instructions parsed successfully")
-        );
-        console.log(
-          colors.gray(`  Instructions count: ${instructions.length}`)
-        );
-        instructions.forEach((instr, i) => {
-          console.log(
-            colors.gray(
-              `    ${i + 1}. ${instr.file} (${
-                instr.createFile ? "CREATE" : "MODIFY"
-              }): ${instr.analysis}`
-            )
-          );
-          console.log(colors.gray(`       Edits: ${instr.edits.length}`));
-        });
-      }
-
-      return instructions;
-    } catch (error) {
-      if (this.debug) {
-        console.log(
-          colors.red(
-            `🔧 [DEBUG] Failed to parse AI edit instructions: ${error.message}`
-          )
-        );
-        console.log(
-          colors.red(`  Response preview: ${response.substring(0, 200)}...`)
-        );
-      }
-      throw new Error(`Failed to parse AI edit instructions: ${error.message}`);
-    }
-  }
-
-  private async applyEdits(instructions: EditInstruction[]): Promise<string[]> {
-    if (this.debug) {
-      console.log(colors.cyan("🔧 [DEBUG] applyEdits() starting"));
-      console.log(colors.gray(`  Instructions: ${instructions.length}`));
-    }
-
-    const changes: string[] = [];
-
-    for (const instruction of instructions) {
-      const filePath = path.resolve(this.projectRoot, instruction.file);
-
-      if (this.debug) {
-        console.log(colors.gray(`  Processing: ${instruction.file}`));
-        console.log(
-          colors.gray(
-            `    Type: ${instruction.createFile ? "CREATE" : "MODIFY"}`
-          )
-        );
-        console.log(colors.gray(`    Analysis: ${instruction.analysis}`));
-      }
-
-      if (instruction.createFile) {
-        const result = await this.createFile(filePath, instruction);
-        changes.push(result);
-      } else {
-        for (const edit of instruction.edits.reverse()) {
-          const result = await this.applyEdit(filePath, edit);
-          changes.push(result);
-        }
-      }
-    }
-
-    if (this.debug) {
-      console.log(
-        colors.cyan(
-          `🔧 [DEBUG] applyEdits() completed, ${changes.length} changes made`
-        )
-      );
-    }
-
-    return changes;
-  }
-
-  private async createFile(
-    filePath: string,
-    instruction: EditInstruction
-  ): Promise<string> {
-    if (this.debug) {
-      console.log(colors.cyan(`🔧 [DEBUG] createFile() starting: ${filePath}`));
-    }
-
-    try {
-      // Ensure directory exists
-      const dir = path.dirname(filePath);
-      if (!fs.existsSync(dir)) {
-        if (this.debug) {
-          console.log(colors.gray(`  Creating directory: ${dir}`));
-        }
-        fs.mkdirSync(dir, { recursive: true });
-        console.log(`📁 Created directory: ${dir}`);
-      }
-
-      // Get file content from edits
-      const edit = instruction.edits[0];
-      const content = edit.newContent.join("\n");
-
-      if (this.debug) {
-        console.log(
-          colors.gray(`  Content length: ${content.length} characters`)
-        );
-        console.log(
-          colors.gray(
-            `  Content preview:\n${content
-              .split("\n")
-              .slice(0, 5)
-              .join("\n")}...`
-          )
-        );
-      }
-
-      // Write file
-      fs.writeFileSync(filePath, content);
-
-      // Add to context map
-      this.fileContextMap.set(filePath, {
-        path: filePath,
-        content,
-        description: this.generateFileDescription(content),
-        lastModified: Date.now(),
-        dependencies: [],
-        exists: true,
-      });
-
-      const changeDescription = `📄 Created ${filePath}: ${instruction.analysis}`;
-      console.log(`✏️ ${changeDescription}`);
-
-      if (this.debug) {
-        console.log(colors.green(`✅ File created successfully`));
-      }
-
-      return changeDescription;
-    } catch (error) {
-      if (this.debug) {
-        console.log(
-          colors.red(`🔧 [DEBUG] createFile() failed: ${error.message}`)
-        );
-      }
-      throw new Error(`Failed to create file ${filePath}: ${error.message}`);
-    }
-  }
-
-  private async applyEdit(
-    filePath: string,
-    edit: {
-      startIndex: number;
-      endIndex: number;
-      newContent: string[];
-      description: string;
-    }
-  ): Promise<string> {
-    if (this.debug) {
-      console.log(colors.cyan(`🔧 [DEBUG] applyEdit() starting: ${filePath}`));
-      console.log(
-        colors.gray(
-          `  Lines ${edit.startIndex}-${edit.endIndex}: ${edit.description}`
-        )
-      );
-    }
-
-    if (!fs.existsSync(filePath)) {
-      throw new Error(`File ${filePath} does not exist`);
-    }
-
-    const content = fs.readFileSync(filePath, "utf-8");
-    const lines = content.split("\n");
-
-    if (this.debug) {
-      console.log(colors.gray(`  Original file has ${lines.length} lines`));
-      console.log(
-        colors.gray(
-          `  Replacing ${edit.endIndex - edit.startIndex + 1} lines with ${
-            edit.newContent.length
-          } lines`
-        )
-      );
-    }
-
-    // Apply the edit
-    const newLines = [
-      ...lines.slice(0, edit.startIndex),
-      ...edit.newContent,
-      ...lines.slice(edit.endIndex + 1),
-    ];
-
-    // Write file
-    fs.writeFileSync(filePath, newLines.join("\n"));
-
-    // Update file context
-    const fileContext = this.fileContextMap.get(filePath);
-    if (fileContext) {
-      fileContext.content = newLines.join("\n");
-      fileContext.lastModified = Date.now();
-    }
-
-    const changeDescription = `📝 Modified ${filePath}: ${edit.description} (lines ${edit.startIndex}-${edit.endIndex})`;
-    console.log(`✏️ ${changeDescription}`);
-
-    if (this.debug) {
-      console.log(colors.gray(`  New file has ${newLines.length} lines`));
-    }
-
-    return changeDescription;
   }
 
   private compileTypeScript(): CompilationResult {
-    if (this.debug) {
-      console.log(colors.cyan("🔧 [DEBUG] compileTypeScript() starting"));
-    }
-
     try {
       this.buildTSProgram();
-
       if (!this.tsProgram) {
-        if (this.debug) {
-          console.log(
-            colors.yellow("🔧 [DEBUG] No TypeScript program available")
-          );
-        }
         return { success: false, errors: [], warnings: [] };
       }
 
@@ -846,48 +555,8 @@ Example new file:
         (d) => d.category === ts.DiagnosticCategory.Warning
       );
 
-      if (this.debug) {
-        console.log(colors.cyan("🔧 [DEBUG] TypeScript compilation results:"));
-        console.log(colors.gray(`  Total diagnostics: ${diagnostics.length}`));
-        console.log(colors.gray(`  Errors: ${errors.length}`));
-        console.log(colors.gray(`  Warnings: ${warnings.length}`));
-
-        if (errors.length > 0) {
-          console.log(colors.red("  Error details:"));
-          errors.forEach((error, i) => {
-            const file = error.file
-              ? path.relative(this.projectRoot, error.file.fileName)
-              : "unknown";
-            const line =
-              error.file && error.start
-                ? error.file.getLineAndCharacterOfPosition(error.start).line
-                : 0;
-            const message = ts.flattenDiagnosticMessageText(
-              error.messageText,
-              "\n"
-            );
-            console.log(
-              colors.red(
-                `    ${i + 1}. ${file}:${line} - TS${error.code}: ${message}`
-              )
-            );
-          });
-        }
-      }
-
-      return {
-        success: errors.length === 0,
-        errors,
-        warnings,
-      };
+      return { success: errors.length === 0, errors, warnings };
     } catch (error) {
-      if (this.debug) {
-        console.log(
-          colors.red(
-            `🔧 [DEBUG] TypeScript compilation failed: ${error.message}`
-          )
-        );
-      }
       return { success: false, errors: [], warnings: [] };
     }
   }
@@ -897,20 +566,11 @@ Example new file:
     changes: string[];
     errors?: string[];
   }> {
-    if (this.debug) {
-      console.log(colors.cyan("🔧 [DEBUG] fixCompilationErrors() starting"));
-      console.log(colors.gray(`  Errors to fix: ${errors.length}`));
-    }
-
-    const maxAttempts = 3;
+    const maxAttempts = 2;
     const changes: string[] = [];
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       console.log(`🔧 Fix attempt ${attempt + 1}/${maxAttempts}`);
-
-      if (this.debug) {
-        console.log(colors.cyan(`🔧 [DEBUG] Fix attempt ${attempt + 1}`));
-      }
 
       const formattedErrors = errors.map((error) => ({
         file: error.file
@@ -924,51 +584,40 @@ Example new file:
         code: error.code,
       }));
 
-      const errorFiles = [
-        ...new Set(
-          formattedErrors.map((e) => path.join(this.projectRoot, e.file))
-        ),
-      ];
-      const context = await this.buildEditingContext(
-        errorFiles,
-        "Fix compilation errors"
-      );
-
       try {
+        const errorFiles = [
+          ...new Set(
+            formattedErrors.map((e) => path.join(this.projectRoot, e.file))
+          ),
+        ];
+        const context = await this.buildEditingContext(
+          errorFiles,
+          "Fix compilation errors"
+        );
         const fixResult = await this.anthropicService.generateErrorFixes(
           formattedErrors,
           context
         );
-        const fixChanges = await this.applyEdits(fixResult.edits);
+        const fixActions: ActionInstruction[] = fixResult.edits.map((edit) => ({
+          type: "file",
+          description: edit.analysis,
+          file: edit.file,
+          createFile: false,
+          edits: edit.edits,
+        }));
+
+        const fixChanges = await this.executeActionPlan(fixActions);
         changes.push(...fixChanges);
 
         const result = this.compileTypeScript();
         if (result.success) {
           console.log("✅ All compilation errors fixed!");
-          if (this.debug) {
-            console.log(
-              colors.green("🔧 [DEBUG] All compilation errors resolved")
-            );
-          }
           return { success: true, changes };
         }
-
         errors = result.errors;
       } catch (error) {
-        const errorMsg = `⚠️ Fix attempt ${attempt + 1} failed: ${
-          error.message
-        }`;
-        console.warn(errorMsg);
-        if (this.debug) {
-          console.log(colors.red(`🔧 [DEBUG] ${errorMsg}`));
-        }
+        console.warn(`⚠️ Fix attempt ${attempt + 1} failed: ${error.message}`);
       }
-    }
-
-    if (this.debug) {
-      console.log(
-        colors.red("🔧 [DEBUG] Failed to fix all compilation errors")
-      );
     }
 
     return {
@@ -980,41 +629,14 @@ Example new file:
     };
   }
 
-  // Helper methods with debug logging
+  // Helper methods
   private findTsConfig(): string {
     const configPath = path.join(this.projectRoot, "tsconfig.json");
-    const exists = fs.existsSync(configPath);
-
-    if (this.debug) {
-      console.log(
-        colors.gray(
-          `  TypeScript config check: ${configPath} ${
-            exists ? "found" : "not found"
-          }`
-        )
-      );
-    }
-
-    return exists ? configPath : "";
+    return fs.existsSync(configPath) ? configPath : "";
   }
 
   private buildTSProgram(): void {
-    if (!this.tsConfigPath) {
-      if (this.debug) {
-        console.log(
-          colors.gray(
-            "  No tsconfig.json found, skipping TypeScript program build"
-          )
-        );
-      }
-      return;
-    }
-
-    if (this.debug) {
-      console.log(
-        colors.gray(`  Building TypeScript program from ${this.tsConfigPath}`)
-      );
-    }
+    if (!this.tsConfigPath) return;
 
     const configFile = ts.readConfigFile(this.tsConfigPath, ts.sys.readFile);
     const compilerOptions = ts.parseJsonConfigFileContent(
@@ -1027,28 +649,13 @@ Example new file:
       compilerOptions.fileNames,
       compilerOptions.options
     );
-
-    if (this.debug) {
-      console.log(
-        colors.gray(
-          `  TypeScript program created with ${compilerOptions.fileNames.length} files`
-        )
-      );
-    }
   }
 
   private findTypeScriptFiles(dir: string): string[] {
     const files: string[] = [];
-
-    if (!fs.existsSync(dir)) {
-      if (this.debug) {
-        console.log(colors.yellow(`  Directory doesn't exist: ${dir}`));
-      }
-      return files;
-    }
+    if (!fs.existsSync(dir)) return files;
 
     const items = fs.readdirSync(dir);
-
     for (const item of items) {
       const fullPath = path.join(dir, item);
       const stat = fs.statSync(fullPath);
@@ -1063,7 +670,6 @@ Example new file:
         files.push(fullPath);
       }
     }
-
     return files;
   }
 
@@ -1103,7 +709,6 @@ Example new file:
 
   private extractFilePathsFromTree(tree: any): string[] {
     const paths: string[] = [];
-
     const traverse = (node: any) => {
       if (node.path && node.exists) {
         paths.push(node.absolutePath);
@@ -1112,39 +717,25 @@ Example new file:
         node.dependencies.forEach(traverse);
       }
     };
-
     traverse(tree);
     return paths;
   }
 
-  private extractFilesFromTree(
-    tree: any
-  ): Array<{ path: string; content: string }> {
-    const files: Array<{ path: string; content: string }> = [];
-
-    const traverse = (node: any) => {
-      if (node.path && node.content && node.exists) {
-        files.push({ path: node.path, content: node.content });
+  private async buildEditingContext(
+    targetFiles: string[],
+    request: string
+  ): Promise<string> {
+    let context = "";
+    for (const filePath of targetFiles) {
+      const relativePath = path.relative(this.projectRoot, filePath);
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath, "utf-8");
+        const lines = content.split("\n");
+        const indexedLines = lines.map((line, index) => `${index}: ${line}`);
+        context += `\n=== ${relativePath} ===\n${indexedLines.join("\n")}\n`;
       }
-      if (node.dependencies) {
-        node.dependencies.forEach(traverse);
-      }
-    };
-
-    traverse(tree);
-    return files;
-  }
-
-  private extractFilePathsFromRequest(request: string): string[] {
-    const patterns = [/[\w\/\-\.]+\.tsx?/g, /src\/[\w\/\-\.]+/g];
-    const matches: string[] = [];
-
-    for (const pattern of patterns) {
-      const found = request.match(pattern) || [];
-      matches.push(...found);
     }
-
-    return matches.map((p) => path.resolve(this.projectRoot, p));
+    return context;
   }
 }
 

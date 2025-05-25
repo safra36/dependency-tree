@@ -1,7 +1,7 @@
 {
   "name": "ai-coding-agent",
-  "version": "1.1.0",
-  "description": "A powerful AI coding agent with Claude integration, dependency analysis and line tracking for intelligent code editing",
+  "version": "1.2.0",
+  "description": "A powerful AI coding agent with Claude integration, shell access, dependency analysis and project management",
   "main": "dist/interactive-cli.js",
   "bin": {
     "ai-agent": "./dist/ai-agent.js",
@@ -37,6 +37,8 @@
     "line-tracking",
     "interactive",
     "automation",
+    "shell",
+    "project-management",
     "cli",
     "global"
   ],

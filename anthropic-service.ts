@@ -60,7 +60,13 @@ export class AnthropicService {
     try {
       const enhancedPrompt = `${prompt}
 
-CRITICAL: Your response must be ONLY valid JSON. Do not include any explanatory text before or after the JSON. Start your response with { or [ and end with } or ].`;
+CRITICAL: Your response must be ONLY valid JSON. Do not include any explanatory text before or after the JSON. Start your response with { or [ and end with } or ].
+
+JSON ESCAPING RULES:
+- Escape all double quotes in strings as \"
+- Escape backslashes as \\
+- Escape newlines as \n
+- Example: "const msg = \"Hello World\";" becomes "const msg = \\\"Hello World\\\";"`;
 
       const startTime = Date.now();
 
@@ -212,17 +218,15 @@ CRITICAL: Your response must be ONLY valid JSON. Do not include any explanatory 
       cleaned = cleaned.substring(0, jsonEnd + 1);
     }
 
-    // Fix common JSON issues
+    // Only apply minimal fixes - avoid aggressive transformations that break content
     const originalCleaned = cleaned;
     cleaned = cleaned
-      .replace(/'/g, '"') // Replace single quotes with double quotes
-      .replace(/(\w+):/g, '"$1":') // Add quotes around unquoted keys
       .replace(/,\s*}/g, "}") // Remove trailing commas before }
       .replace(/,\s*]/g, "]"); // Remove trailing commas before ]
 
     if (this.config.debug && cleaned !== originalCleaned) {
       console.log(
-        colors.gray(`  🔧 Applied JSON fixes (quotes, trailing commas)`)
+        colors.gray(`  🔧 Applied minimal JSON fixes (trailing commas only)`)
       );
     }
 
