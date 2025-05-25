@@ -9,6 +9,7 @@ import { ConfigManager } from "./config-manager";
 import { ShellExecutor } from "./shell-executor";
 import { ProjectAnalyzer } from "./project-analyzer";
 import { SyntaxChecker } from "./syntax-checker";
+import { SmartFileEditor } from "./smart-file-editor";
 import colors from "./colors";
 
 interface FileContext {
@@ -55,6 +56,7 @@ class AICodeAgent {
   private shellExecutor: ShellExecutor;
   private projectAnalyzer: ProjectAnalyzer;
   private syntaxChecker: SyntaxChecker;
+  private smartEditor: SmartFileEditor;
   private debug: boolean;
 
   constructor(
@@ -84,6 +86,7 @@ class AICodeAgent {
     });
     this.projectAnalyzer = new ProjectAnalyzer(this.projectRoot, this.debug);
     this.syntaxChecker = new SyntaxChecker(this.projectRoot, this.debug);
+    this.smartEditor = new SmartFileEditor(this.debug);
 
     const apiKey = this.configManager.getAnthropicApiKey();
     if (!apiKey) {
@@ -583,7 +586,23 @@ FILE GUIDELINES:
       );
     }
 
+    // Group actions by file to prevent conflicts
+    const fileActions = new Map<string, ActionInstruction[]>();
+    const otherActions: ActionInstruction[] = [];
+
     for (const action of actions) {
+      if (action.type === "file" && action.file) {
+        if (!fileActions.has(action.file)) {
+          fileActions.set(action.file, []);
+        }
+        fileActions.get(action.file)!.push(action);
+      } else {
+        otherActions.push(action);
+      }
+    }
+
+    // Execute command actions first
+    for (const action of otherActions) {
       try {
         if (action.type === "command") {
           console.log(`🔨 ${action.description}`);
@@ -608,16 +627,6 @@ FILE GUIDELINES:
             }
             changes.push(errorMsg);
           }
-        } else if (action.type === "file") {
-          console.log(`📄 ${action.description}`);
-
-          if (action.createFile) {
-            const result = await this.createFile(action);
-            changes.push(result);
-          } else {
-            const result = await this.modifyFile(action);
-            changes.push(result);
-          }
         }
       } catch (error) {
         const errorMsg = `❌ Action failed: ${error.message}`;
@@ -625,6 +634,32 @@ FILE GUIDELINES:
         changes.push(errorMsg);
 
         if (!action.continueOnError) {
+          break;
+        }
+      }
+    }
+
+    // Execute file actions, consolidating multiple edits per file
+    for (const [filePath, fileActionsList] of fileActions) {
+      try {
+        // For files with multiple actions, only use the last one (most complete)
+        const action = fileActionsList[fileActionsList.length - 1];
+
+        console.log(`📄 ${action.description}`);
+
+        if (action.createFile) {
+          const result = await this.createFile(action);
+          changes.push(result);
+        } else {
+          const result = await this.modifyFile(action);
+          changes.push(result);
+        }
+      } catch (error) {
+        const errorMsg = `❌ File action failed: ${error.message}`;
+        console.log(colors.red(errorMsg));
+        changes.push(errorMsg);
+
+        if (!fileActionsList[0].continueOnError) {
           break;
         }
       }
@@ -673,34 +708,185 @@ FILE GUIDELINES:
       throw new Error(`File ${filePath} does not exist`);
     }
 
+    const ext = path.extname(filePath);
+    const fileName = path.basename(filePath);
+
+    // Use smart editing for JSON files
+    if (ext === ".json") {
+      try {
+        // Try to detect if this is a simple property addition/merge
+        const edit = action.edits![0];
+        const newContent = Array.isArray(edit.newContent)
+          ? edit.newContent.join("\n")
+          : edit.newContent;
+
+        // Parse the new content to see if it's a JSON fragment we can merge
+        let jsonToMerge: any = null;
+        try {
+          jsonToMerge = JSON.parse(newContent);
+        } catch {
+          // Not valid JSON, fall back to full replacement
+          const result = await this.smartEditor.editFile(
+            filePath,
+            {
+              type: "full-replace",
+              content: newContent,
+            },
+            action.description
+          );
+
+          if (result.success) {
+            await this.checkFileSyntax(filePath);
+            this.updateFileContext(filePath, newContent);
+            return `📝 Replaced ${action.file}: ${action.description}`;
+          } else {
+            throw new Error(result.errors.join(", "));
+          }
+        }
+
+        // Special handling for common JSON files
+        if (fileName === "tsconfig.json" && jsonToMerge.compilerOptions) {
+          const result = await this.smartEditor.updateTsConfig(
+            filePath,
+            jsonToMerge.compilerOptions,
+            Object.fromEntries(
+              Object.entries(jsonToMerge).filter(
+                ([key]) => key !== "compilerOptions"
+              )
+            )
+          );
+
+          if (result.success) {
+            await this.checkFileSyntax(filePath);
+            const newContent = fs.readFileSync(filePath, "utf-8");
+            this.updateFileContext(filePath, newContent);
+            return `📝 Updated tsconfig.json: ${action.description}`;
+          } else {
+            throw new Error(result.errors.join(", "));
+          }
+        }
+
+        if (fileName === "package.json") {
+          const result = await this.smartEditor.updatePackageJson(
+            filePath,
+            jsonToMerge
+          );
+
+          if (result.success) {
+            await this.checkFileSyntax(filePath);
+            const newContent = fs.readFileSync(filePath, "utf-8");
+            this.updateFileContext(filePath, newContent);
+            return `📝 Updated package.json: ${action.description}`;
+          } else {
+            throw new Error(result.errors.join(", "));
+          }
+        }
+
+        // Generic JSON merge
+        const operations = Object.entries(jsonToMerge).map(([key, value]) => ({
+          path: key,
+          value: value,
+          operation: "merge" as const,
+        }));
+
+        const result = await this.smartEditor.editFile(
+          filePath,
+          {
+            type: "json-merge",
+            jsonOperations: operations,
+          },
+          action.description
+        );
+
+        if (result.success) {
+          await this.checkFileSyntax(filePath);
+          const newContent = fs.readFileSync(filePath, "utf-8");
+          this.updateFileContext(filePath, newContent);
+          return `📝 Updated ${action.file}: ${action.description}`;
+        } else {
+          throw new Error(result.errors.join(", "));
+        }
+      } catch (error) {
+        if (this.debug) {
+          console.log(
+            colors.yellow(
+              `⚠️ Smart edit failed, falling back to direct replacement: ${error.message}`
+            )
+          );
+        }
+        // Fallback to direct replacement
+        const edit = action.edits![0];
+        const content = Array.isArray(edit.newContent)
+          ? edit.newContent.join("\n")
+          : edit.newContent;
+
+        fs.writeFileSync(filePath, content);
+        await this.checkFileSyntax(filePath);
+        this.updateFileContext(filePath, content);
+        return `📝 Replaced ${action.file}: ${action.description}`;
+      }
+    }
+
+    // For full file replacements or non-JSON files
+    if (
+      action.edits!.length === 1 &&
+      action.edits![0].startIndex === 0 &&
+      action.edits![0].endIndex === -1
+    ) {
+      const edit = action.edits![0];
+      const content = Array.isArray(edit.newContent)
+        ? edit.newContent.join("\n")
+        : edit.newContent;
+
+      fs.writeFileSync(filePath, content);
+      await this.checkFileSyntax(filePath);
+      this.updateFileContext(filePath, content);
+      return `📝 Replaced ${action.file}: ${action.description}`;
+    }
+
+    // Line-based editing for other files
     const content = fs.readFileSync(filePath, "utf-8");
     const lines = content.split("\n");
 
-    for (const edit of action.edits!.reverse()) {
+    // Sort edits in reverse order to avoid index shifting
+    const sortedEdits = [...action.edits!].sort(
+      (a, b) => b.startIndex - a.startIndex
+    );
+
+    for (const edit of sortedEdits) {
       const editContent = Array.isArray(edit.newContent)
         ? edit.newContent
         : [edit.newContent];
+
+      // Validate indices
+      const startIndex = Math.max(0, edit.startIndex);
+      const endIndex =
+        edit.endIndex === -1
+          ? lines.length - 1
+          : Math.min(lines.length - 1, edit.endIndex);
+
       const newLines = [
-        ...lines.slice(0, edit.startIndex),
+        ...lines.slice(0, startIndex),
         ...editContent,
-        ...lines.slice(edit.endIndex + 1),
+        ...lines.slice(endIndex + 1),
       ];
       lines.splice(0, lines.length, ...newLines);
     }
 
-    fs.writeFileSync(filePath, lines.join("\n"));
-
-    // Check syntax immediately after modification
+    const finalContent = lines.join("\n");
+    fs.writeFileSync(filePath, finalContent);
     await this.checkFileSyntax(filePath);
-
-    // Update context map
-    const fileContext = this.fileContextMap.get(filePath);
-    if (fileContext) {
-      fileContext.content = lines.join("\n");
-      fileContext.lastModified = Date.now();
-    }
+    this.updateFileContext(filePath, finalContent);
 
     return `📝 Modified ${action.file}: ${action.description}`;
+  }
+
+  private updateFileContext(filePath: string, content: string): void {
+    const fileContext = this.fileContextMap.get(filePath);
+    if (fileContext) {
+      fileContext.content = content;
+      fileContext.lastModified = Date.now();
+    }
   }
 
   private async checkSyntaxErrors(): Promise<void> {
