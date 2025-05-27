@@ -49,6 +49,8 @@ export class EnhancedSequentialAIAgent {
 			throw new Error("Anthropic API key is required");
 		}
 
+		// Helper methods
+
 		this.anthropicService = new AnthropicService({
 			apiKey,
 			model: this.configManager.getModel(),
@@ -115,47 +117,81 @@ export class EnhancedSequentialAIAgent {
 		};
 		this.executionPlan.push(step);
 
+		console.log("🔍 Scanning existing files...");
+		const existingFiles = await this.scanExistingFiles();
+		console.log(`📁 Found ${existingFiles.length} existing files`);
+
+		if (existingFiles.length > 0) {
+			console.log("📄 Existing files:");
+			existingFiles.forEach((file) => {
+				console.log(`   ${colors.gray(file.path)} (${file.type})`);
+			});
+		}
+
 		console.log("🤖 AI is analyzing the request and creating a plan...");
 
 		const planPrompt = `You are a systematic coding assistant. Analyze this request and create a detailed execution plan.
 
 USER REQUEST: "${this.userRequest}"
 
+EXISTING FILES IN PROJECT:
+${
+	existingFiles.length === 0
+		? "No existing files - this is a new/empty project"
+		: existingFiles
+				.map((f) => `${f.path} - ${f.type} - ${f.description}`)
+				.join("\n")
+}
+
 CRITICAL DECISION RULES:
-1. FOR SIMPLE WEB FILES (HTML/CSS/JS): If the request is for basic web content that can be self-contained, prefer SINGLE FILE solutions
-   - "create HTML login form with CSS" → SINGLE index.html file with embedded <style>
-   - "create simple webpage" → SINGLE index.html file  
-   - "create basic calculator" → SINGLE index.html with embedded CSS/JS
 
-2. FOR COMPLEX APPLICATIONS: Use multiple files only when genuinely needed
-   - "create React component with styling" → separate .tsx and .css files
-   - "create Node.js API with routes" → multiple .ts files
-   - "refactor existing large file" → multiple smaller files
+1. EXISTING FILE AWARENESS:
+   - If files already exist, understand their purpose and relationships
+   - Don't replace existing files unless explicitly asked to "replace" or "rewrite"
+   - When adding new pages/features, CREATE new files and UPDATE existing ones with navigation
 
-3. FILE COORDINATION: When creating multiple files, they MUST work together
-   - HTML must include <link> tags for CSS files
-   - CSS class names must match HTML exactly
-   - Import/export statements must be correct
+2. MULTI-PAGE WEBSITE LOGIC:
+   - "add contact page" → CREATE contact.html + UPDATE index.html with navigation
+   - "add about page" → CREATE about.html + UPDATE existing pages with links
+   - "implement another page" → CREATE new page + UPDATE navigation in existing pages
+   - "add new section" to existing page → MODIFY existing file
+
+3. FILE STRATEGY DECISIONS:
+   - Single HTML file: Simple standalone content with no existing files
+   - Multi-file: When adding pages to existing site OR creating complex applications
+   - Always maintain navigation consistency across pages
+
+4. ACTION TYPES:
+   - "create" = new file that doesn't exist
+   - "modify" = update existing file (add navigation, update content)
+   - "replace" = completely rewrite existing file (only when explicitly requested)
 
 RESPONSE FORMAT - RESPOND WITH ONLY THIS JSON STRUCTURE:
 {
   "understanding": "What the user wants to accomplish",
-  "fileStrategy": "single-file" | "multi-file",
-  "reasoning": "Why single-file or multi-file approach was chosen",
-  "likelyFilesToCreate": ["file1.html"] OR ["file1.html", "file2.css"],
-  "contextFilesNeeded": [],
+  "fileStrategy": "single-file" | "multi-file" | "modify-existing",
+  "reasoning": "Why this approach was chosen based on existing files and request",
+  "likelyFilesToCreate": ["new-file1.html"],
+  "likelyFilesToModify": ["existing-file.html"],
+  "contextFilesNeeded": ["file-to-understand.html"],
   "executionSequence": [
     {
       "step": 1,
-      "action": "create",
+      "action": "create" | "modify",
       "file": "filename.html",
       "purpose": "What this accomplishes",
-      "dependencies": [],
-      "coordination": "How this file works with others (if multi-file)"
+      "dependencies": ["other-files"],
+      "coordination": "How this works with other files",
+      "navigationUpdates": "What navigation changes are needed"
     }
   ],
   "potentialChallenges": ["challenge1", "challenge2"]
 }
+
+EXAMPLES:
+- Request: "add contact page" + existing index.html → CREATE contact.html + MODIFY index.html (add nav link)
+- Request: "create login form" + no existing files → CREATE single index.html
+- Request: "update homepage styling" + existing index.html → MODIFY index.html
 
 CRITICAL: Respond with ONLY valid JSON. No explanations before or after.`;
 
@@ -203,17 +239,31 @@ CRITICAL: Respond with ONLY valid JSON. No explanations before or after.`;
 		const step: PlanStep = {
 			id: "discover-1",
 			phase: "discover",
-			description: "Discover project structure using dependency tree",
+			description: "Discover project structure",
 			status: "in-progress",
 		};
 		this.executionPlan.push(step);
 
-		// Check if this is a simple standalone file creation request
 		const executionPlan = this.executionPlan[0]?.details;
+
+		// Check if we have existing files to modify or if it's truly standalone
+		const hasFilesToModify =
+			(executionPlan?.likelyFilesToModify?.length || 0) > 0;
+		const hasContextFiles =
+			(executionPlan?.contextFilesNeeded?.length || 0) > 0;
+		const isMultiFileStrategy =
+			executionPlan?.fileStrategy === "multi-file";
+
+		// Only treat as standalone if it's truly a single-file creation with no modifications needed
 		const isStandaloneFileCreation =
 			this.isStandaloneFileCreation(executionPlan);
 
-		if (isStandaloneFileCreation) {
+		if (
+			isStandaloneFileCreation &&
+			!hasFilesToModify &&
+			!hasContextFiles &&
+			!isMultiFileStrategy
+		) {
 			console.log(
 				"🎯 Detected standalone file creation - skipping dependency analysis"
 			);
@@ -221,7 +271,7 @@ CRITICAL: Respond with ONLY valid JSON. No explanations before or after.`;
 
 			step.details = {
 				standalone: true,
-				reason: "Simple file creation doesn't require project analysis",
+				reason: "Simple single-file creation doesn't require project analysis",
 				fileNames: [],
 			};
 			step.status = "completed";
@@ -332,114 +382,60 @@ CRITICAL: Respond with ONLY valid JSON. No explanations before or after.`;
 		};
 		this.executionPlan.push(step);
 
-		// Handle standalone file creation or bare projects
-		if (this.fileTree.standalone || this.fileTree.bareProject) {
-			console.log(
-				"🎯 Standalone/bare project - no existing files to select for context"
-			);
+		const executionPlan = this.executionPlan[0]?.details;
+		const filesToCreate = executionPlan?.likelyFilesToCreate || [];
+		const filesToModify = executionPlan?.likelyFilesToModify || [];
+		const contextFiles = executionPlan?.contextFilesNeeded || [];
 
-			const executionPlan = this.executionPlan[0]?.details;
-			const filesToCreate = executionPlan?.likelyFilesToCreate || [];
+		// Handle projects with existing files (most common case)
+		if (!this.fileTree.standalone && !this.fileTree.bareProject) {
+			console.log("🎯 Multi-file project with existing structure");
+		} else {
+			console.log("🎯 Project with limited existing structure");
+		}
 
-			step.details = {
-				primaryFiles: filesToCreate,
-				contextFiles: [],
-				reasoning: {
-					primaryFiles:
-						"Files to be created as specified in execution plan",
-					contextFiles: "No existing files available for context",
-				},
-			};
-			step.status = "completed";
+		step.details = {
+			primaryFiles: filesToCreate,
+			modifyFiles: filesToModify,
+			contextFiles: contextFiles,
+			reasoning: {
+				primaryFiles:
+					"Files to be created as specified in execution plan",
+				modifyFiles:
+					"Files to be modified as specified in execution plan",
+				contextFiles: "Files needed for context and modification",
+			},
+		};
+		step.status = "completed";
 
-			this.selectedFiles = filesToCreate;
+		this.selectedFiles = [
+			...filesToCreate,
+			...filesToModify,
+			...contextFiles,
+		];
 
+		if (filesToCreate.length > 0) {
 			console.log(`📄 Files to create (${filesToCreate.length}):`);
 			filesToCreate.forEach((file: string) => {
 				console.log(`   ✏️ ${colors.yellow(file)}`);
 			});
-
-			await this.pause(
-				"Files identified for creation. Continue with execution?"
-			);
-			return;
 		}
 
-		console.log(
-			"🤖 AI is selecting the most relevant files for this task..."
-		);
-
-		const selectionPrompt = `Based on the execution plan and discovered project files, select which files are most relevant for this task.
-
-ORIGINAL REQUEST: "${this.userRequest}"
-
-EXECUTION PLAN: ${JSON.stringify(this.executionPlan[0]?.details, null, 2)}
-
-AVAILABLE PROJECT FILES:
-${this.fileTree.files.join("\n")}
-
-Select files that are most relevant. Remember:
-- Keep context manageable - select only truly necessary files
-- Prioritize files that will be modified or are essential for understanding
-- Each file should be maximum 100 lines when implemented
-
-RESPOND WITH ONLY THIS JSON:
-{
-  "primaryFiles": ["files that will be directly modified"],
-  "contextFiles": ["files needed for understanding the codebase"],
-  "reasoning": {
-    "primaryFiles": "Why these files were selected for modification",
-    "contextFiles": "Why these files are needed for context"
-  }
-}`;
-
-		try {
-			const response = await this.anthropicService.generateCodeEdits(
-				selectionPrompt
-			);
-			const selection = JSON.parse(this.cleanJsonResponse(response));
-
-			this.selectedFiles = [
-				...(selection.primaryFiles || []),
-				...(selection.contextFiles || []),
-			];
-
-			step.details = selection;
-			step.status = "completed";
-
-			console.log(
-				`📁 Primary files (${selection.primaryFiles?.length || 0}):`
-			);
-			(selection.primaryFiles || []).forEach((file: string) => {
-				console.log(`   ✏️ ${colors.yellow(file)}`);
+		if (filesToModify.length > 0) {
+			console.log(`📝 Files to modify (${filesToModify.length}):`);
+			filesToModify.forEach((file: string) => {
+				console.log(`   🔧 ${colors.blue(file)}`);
 			});
+		}
 
-			console.log(
-				`📚 Context files (${selection.contextFiles?.length || 0}):`
-			);
-			(selection.contextFiles || []).forEach((file: string) => {
+		if (contextFiles.length > 0) {
+			console.log(`📚 Context files (${contextFiles.length}):`);
+			contextFiles.forEach((file: string) => {
 				console.log(`   📖 ${colors.gray(file)}`);
 			});
-
-			console.log(`💡 Reasoning:`);
-			console.log(
-				`   Primary: ${colors.gray(
-					selection.reasoning?.primaryFiles || "Not provided"
-				)}`
-			);
-			console.log(
-				`   Context: ${colors.gray(
-					selection.reasoning?.contextFiles || "Not provided"
-				)}`
-			);
-
-			await this.pause(
-				"Files selected. Continue with loading file contents?"
-			);
-		} catch (error) {
-			step.status = "failed";
-			throw new Error(`File selection failed: ${error.message}`);
 		}
+
+		await this.pause("Files identified. Continue with loading content?");
 	}
 
 	private async phase4_LoadFileContexts(): Promise<void> {
@@ -449,36 +445,13 @@ RESPOND WITH ONLY THIS JSON:
 		const step: PlanStep = {
 			id: "load-1",
 			phase: "load",
-			description: "Load selected file contents using dependency tree",
+			description: "Load selected file contents",
 			status: "in-progress",
 		};
 		this.executionPlan.push(step);
 
-		// Handle standalone/bare projects
-		if (this.fileTree.standalone || this.fileTree.bareProject) {
-			console.log(
-				"📝 Standalone/bare project - no existing files to load"
-			);
-			console.log("🎯 Ready to create new files from scratch");
-
-			step.details = {
-				requestedFiles: 0,
-				loadedFiles: 0,
-				errors: [],
-				message:
-					"No existing files to load for standalone/bare project",
-			};
-			step.status = "completed";
-
-			await this.pause(
-				"No existing context needed. Continue with executing changes?"
-			);
-			return;
-		}
-
-		console.log(
-			"📖 Loading file contents using dependency-tree.js --format content..."
-		);
+		// Load any existing files that need to be referenced or modified
+		console.log("📖 Loading file contents for context and modification...");
 
 		try {
 			let loadedCount = 0;
@@ -490,20 +463,13 @@ RESPOND WITH ONLY THIS JSON:
 
 					const filePath = path.resolve(this.projectRoot, file);
 					if (fs.existsSync(filePath)) {
-						// Use dependency-tree.js to get file content with proper formatting
-						const contentOutput = await this.runDependencyTree(
-							filePath,
-							"content"
-						);
-						const content = this.extractContentFromOutput(
-							contentOutput,
-							file
-						);
+						// Read file content directly
+						const content = fs.readFileSync(filePath, "utf-8");
 
 						this.fileContexts.set(file, {
 							path: file,
 							content: content,
-							relevance: "high", // We can enhance this later
+							relevance: "high",
 							purpose: "Selected for task context",
 						});
 
@@ -515,9 +481,11 @@ RESPOND WITH ONLY THIS JSON:
 						);
 					} else {
 						console.log(
-							`   ⚠️  File not found: ${colors.yellow(file)}`
+							`   ⚠️  File not found (will be created): ${colors.yellow(
+								file
+							)}`
 						);
-						errors.push(`File not found: ${file}`);
+						// This is okay - file will be created
 					}
 				} catch (error) {
 					console.log(
@@ -539,13 +507,20 @@ RESPOND WITH ONLY THIS JSON:
 			console.log(
 				`📊 Successfully loaded ${colors.green(
 					loadedCount.toString()
-				)}/${this.selectedFiles.length} files`
+				)}/${this.selectedFiles.length} existing files`
 			);
 
 			if (errors.length > 0) {
 				console.log(`⚠️  Encountered ${errors.length} errors:`);
 				errors.forEach((error) =>
 					console.log(`   - ${colors.red(error)}`)
+				);
+			}
+
+			const newFilesCount = this.selectedFiles.length - loadedCount;
+			if (newFilesCount > 0) {
+				console.log(
+					`📄 ${newFilesCount} files will be created from scratch`
 				);
 			}
 
@@ -570,11 +545,30 @@ RESPOND WITH ONLY THIS JSON:
 		};
 		this.executionPlan.push(step);
 
+		// Get the execution sequence from the original plan
 		const executionPlan =
 			this.executionPlan[0]?.details?.executionSequence || [];
+
+		if (executionPlan.length === 0) {
+			throw new Error("No execution sequence found in plan");
+		}
+
 		console.log(
 			`🚀 Executing ${executionPlan.length} planned changes sequentially...`
 		);
+
+		// Display the full execution plan
+		console.log(`\n📋 Full Execution Plan:`);
+		executionPlan.forEach((change: any, index: number) => {
+			const icon = change.action === "create" ? "📄" : "🔧";
+			console.log(
+				`   ${index + 1}. ${icon} ${colors.yellow(
+					change.action.toUpperCase()
+				)} ${change.file}`
+			);
+			console.log(`      Purpose: ${colors.gray(change.purpose)}`);
+		});
+		console.log("");
 
 		const results: any[] = [];
 		let successCount = 0;
@@ -591,7 +585,7 @@ RESPOND WITH ONLY THIS JSON:
 				)}`
 			);
 			console.log(`📁 File: ${change.file}`);
-			console.log(`🔧 Action: ${change.action}`);
+			console.log(`🔧 Action: ${change.action.toUpperCase()}`);
 
 			try {
 				const result = await this.executeFileChange(
@@ -602,6 +596,7 @@ RESPOND WITH ONLY THIS JSON:
 				successCount++;
 				console.log(`   ✅ ${colors.green("Completed successfully")}`);
 
+				// Quick pause between changes
 				await this.pause(
 					`Change ${i + 1} completed. Continue with next change?`
 				);
@@ -628,6 +623,14 @@ RESPOND WITH ONLY THIS JSON:
 				executionPlan.length
 			} changes completed successfully`
 		);
+
+		if (successCount < executionPlan.length) {
+			console.log(
+				colors.yellow(
+					`⚠️  ${executionPlan.length - successCount} changes failed`
+				)
+			);
+		}
 	}
 
 	private async phase6_ValidateResults(): Promise<void> {
@@ -702,17 +705,45 @@ RESPOND WITH ONLY THIS JSON:
 	private buildCoordinationContext(executionPlan: any[]): any {
 		const context = {
 			fileStrategy:
-				this.executionPlan[0]?.details?.fileStrategy || "single-file",
+				this.executionPlan[0]?.details?.fileStrategy || "multi-file",
 			allFiles: executionPlan.map((item) => item.file),
 			coordination: {},
+			filesToCreate: executionPlan
+				.filter((item) => item.action === "create")
+				.map((item) => item.file),
+			filesToModify: executionPlan
+				.filter((item) => item.action === "modify")
+				.map((item) => item.file),
+			dependencies: {},
 		};
 
-		// Build coordination map
+		// Build coordination map and dependencies
 		executionPlan.forEach((item) => {
 			if (item.coordination) {
 				context.coordination[item.file] = item.coordination;
 			}
+			if (item.dependencies) {
+				context.dependencies[item.file] = item.dependencies;
+			}
 		});
+
+		if (this.debug) {
+			console.log(colors.cyan("🔧 [DEBUG] Coordination context built:"));
+			console.log(colors.gray(`  Strategy: ${context.fileStrategy}`));
+			console.log(
+				colors.gray(`  All files: ${context.allFiles.join(", ")}`)
+			);
+			console.log(
+				colors.gray(
+					`  Files to create: ${context.filesToCreate.join(", ")}`
+				)
+			);
+			console.log(
+				colors.gray(
+					`  Files to modify: ${context.filesToModify.join(", ")}`
+				)
+			);
+		}
 
 		return context;
 	}
@@ -722,6 +753,7 @@ RESPOND WITH ONLY THIS JSON:
 		coordinationContext: any
 	): Promise<string> {
 		const filePath = path.resolve(this.projectRoot, change.file);
+		const fileExists = fs.existsSync(filePath);
 
 		// Build context for AI (handle empty context gracefully)
 		let contextStr = "";
@@ -730,37 +762,48 @@ RESPOND WITH ONLY THIS JSON:
 				.map(([file, context]) => `=== ${file} ===\n${context.content}`)
 				.join("\n\n");
 		} else {
-			contextStr =
-				"// No existing project context - creating standalone file";
+			contextStr = "// No existing project context loaded for reference";
 		}
 
-		// Enhanced prompt with coordination information
+		// Get current file content if modifying
+		let currentFileContent = "";
+		if (fileExists && change.action === "modify") {
+			currentFileContent = fs.readFileSync(filePath, "utf-8");
+		}
+
+		// Enhanced prompt with coordination information and modification support
 		const filePrompt = `You are implementing a file change as part of a systematic coding task.
 
 ORIGINAL REQUEST: "${this.userRequest}"
 
 CHANGE DETAILS:
 - File: ${change.file}
-- Action: ${change.action}
+- Action: ${change.action} ${fileExists ? "(file exists)" : "(new file)"}
 - Purpose: ${change.purpose}
 - Dependencies: ${change.dependencies?.join(", ") || "None"}
+- Navigation Updates: ${change.navigationUpdates || "None"}
 
 FILE COORDINATION STRATEGY: ${coordinationContext.fileStrategy}
+
+COORDINATION REQUIREMENTS:
 ${
 	coordinationContext.fileStrategy === "multi-file"
 		? `
-COORDINATION REQUIREMENTS:
-- All files being created: ${coordinationContext.allFiles.join(", ")}
+- All files in project: ${coordinationContext.allFiles.join(", ")}
+- Files being created: ${coordinationContext.filesToCreate.join(", ")}
+- Files being modified: ${coordinationContext.filesToModify.join(", ")}
 - This file coordination: ${
 				coordinationContext.coordination[change.file] ||
 				"None specified"
 		  }
 
-CRITICAL MULTI-FILE RULES:
-- If creating HTML + CSS: HTML MUST include <link rel="stylesheet" href="filename.css">
-- CSS class names MUST exactly match HTML class names
-- If creating multiple JS/TS files: imports/exports must be correct
-- File names must be consistent across references
+CRITICAL MULTI-FILE COORDINATION RULES:
+- If creating CSS files: Use class names that will match the HTML files being created/modified
+- If creating HTML files: Include <link rel="stylesheet" href="styles.css"> or appropriate CSS file references
+- CSS class names MUST exactly match HTML class names across all files
+- Navigation links should be consistent across all HTML pages
+- Use relative URLs (./page.html) for internal navigation
+- If modifying HTML: Add CSS links and apply consistent class names with other pages
 `
 		: `
 SINGLE-FILE STRATEGY:
@@ -770,27 +813,47 @@ SINGLE-FILE STRATEGY:
 `
 }
 
-CURRENT PROJECT CONTEXT:
-${contextStr}
-
-EXISTING FILE CONTENT (if modifying):
 ${
-	fs.existsSync(filePath)
-		? fs.readFileSync(filePath, "utf-8")
-		: "// File does not exist - will be created"
+	fileExists && change.action === "modify"
+		? `
+MODIFICATION MODE:
+- Current file content is provided below
+- Make targeted changes to achieve the purpose
+- Preserve existing functionality unless specifically changing it
+- If adding CSS links, place them in the <head> section
+- If updating styles, maintain existing styling approach
+- Ensure consistent navigation structure with other pages
+
+CURRENT FILE CONTENT:
+${currentFileContent}
+`
+		: `
+CREATION MODE:
+- Create new file from scratch
+- Follow the purpose and coordination requirements
+- For CSS files: Create comprehensive styles that will work with the HTML files
+- For HTML files: Include proper CSS links and use coordinated class names
+`
 }
 
+PROJECT CONTEXT FOR REFERENCE:
+${contextStr}
+
 CRITICAL OUTPUT REQUIREMENTS:
-- Respond with ONLY the raw file content
+- Respond with ONLY the complete file content (modified or new)
 - NO JSON wrapping like {"content": "..."} 
-- NO markdown code blocks like \`\`\`html
+- NO markdown code blocks like \`\`\`html or \`\`\`css
 - NO explanatory text before or after
 - Start directly with the file content
 - For HTML: Start with <!DOCTYPE html>
-- For CSS: Start with the first CSS rule
+- For CSS: Start with the first CSS rule or selector
 - For JS/TS: Start with imports or first line of code
 
-Generate the COMPLETE file content for ${change.file}:`;
+${
+	change.action === "modify"
+		? "MODIFY the provided file content to achieve the purpose:"
+		: "CREATE the complete file content for"
+} ${change.file}:`;
 
 		const response = await this.anthropicService.generateCodeEdits(
 			filePrompt
@@ -811,7 +874,120 @@ Generate the COMPLETE file content for ${change.file}:`;
 		}`;
 	}
 
-	// Helper methods
+	private async scanExistingFiles(): Promise<
+		Array<{
+			path: string;
+			type: string;
+			description: string;
+			size: number;
+		}>
+	> {
+		const existingFiles: Array<{
+			path: string;
+			type: string;
+			description: string;
+			size: number;
+		}> = [];
+
+		try {
+			const files = this.findAllWebFiles(this.projectRoot);
+
+			for (const filePath of files) {
+				try {
+					const relativePath = path.relative(
+						this.projectRoot,
+						filePath
+					);
+					const ext = path.extname(filePath);
+					const stats = fs.statSync(filePath);
+
+					let type = "unknown";
+					let description = "";
+
+					// Determine file type and basic description
+					switch (ext.toLowerCase()) {
+						case ".html":
+							type = "HTML page";
+							const content = fs.readFileSync(filePath, "utf-8");
+							const titleMatch = content.match(
+								/<title>(.*?)<\/title>/i
+							);
+							const title = titleMatch
+								? titleMatch[1]
+								: "Untitled";
+							description = `HTML page: ${title}`;
+
+							// Check for navigation or multi-page indicators
+							if (
+								content.includes("href=") ||
+								content.includes("nav")
+							) {
+								description += " (has navigation)";
+							}
+							break;
+						case ".css":
+							type = "Stylesheet";
+							description = "CSS stylesheet";
+							break;
+						case ".js":
+							type = "JavaScript";
+							description = "JavaScript file";
+							break;
+						case ".json":
+							type = "Configuration";
+							description = "JSON configuration";
+							break;
+						default:
+							type = ext.substring(1).toUpperCase();
+							description = `${type} file`;
+					}
+
+					existingFiles.push({
+						path: relativePath,
+						type,
+						description,
+						size: stats.size,
+					});
+				} catch (error) {
+					// Skip files that can't be read
+					continue;
+				}
+			}
+		} catch (error) {
+			// If scanning fails, return empty array
+			if (this.debug) {
+				console.log(
+					colors.yellow(`⚠️  File scanning failed: ${error.message}`)
+				);
+			}
+		}
+
+		return existingFiles;
+	}
+
+	private findAllWebFiles(dir: string): string[] {
+		const files: string[] = [];
+		const extensions = [".html", ".css", ".js", ".json", ".md", ".txt"];
+
+		if (!fs.existsSync(dir)) return files;
+
+		const items = fs.readdirSync(dir);
+		for (const item of items) {
+			const fullPath = path.join(dir, item);
+			const stat = fs.statSync(fullPath);
+
+			if (
+				stat.isDirectory() &&
+				!item.startsWith(".") &&
+				!["node_modules", "dist", "build", "coverage"].includes(item)
+			) {
+				files.push(...this.findAllWebFiles(fullPath));
+			} else if (extensions.some((ext) => item.endsWith(ext))) {
+				files.push(fullPath);
+			}
+		}
+		return files;
+	}
 	private findProjectEntryPoints(): string[] {
 		const candidates = [
 			// TypeScript/Node.js entry points
@@ -1257,34 +1433,59 @@ Generate the COMPLETE file content for ${change.file}:`;
 	private isStandaloneFileCreation(executionPlan: any): boolean {
 		if (!executionPlan) return false;
 
-		// Check the fileStrategy first
+		// Explicit strategy check - trust the AI's decision
 		if (executionPlan.fileStrategy === "single-file") {
 			return true;
 		}
 
-		// Legacy check for backward compatibility
+		if (
+			executionPlan.fileStrategy === "multi-file" ||
+			executionPlan.fileStrategy === "modify-existing"
+		) {
+			return false;
+		}
+
+		// If we have files to modify, it's definitely not standalone
+		if (
+			executionPlan.likelyFilesToModify &&
+			executionPlan.likelyFilesToModify.length > 0
+		) {
+			return false;
+		}
+
+		// If we need context files, it's not standalone
+		if (
+			executionPlan.contextFilesNeeded &&
+			executionPlan.contextFilesNeeded.length > 0
+		) {
+			return false;
+		}
+
+		// If creating multiple files (like CSS + HTML), it's not standalone
 		const filesToCreate = executionPlan.likelyFilesToCreate || [];
-		const filesToModify = executionPlan.likelyFilesToModify || [];
-		const contextFilesNeeded = executionPlan.contextFilesNeeded || [];
+		if (filesToCreate.length > 1) {
+			return false;
+		}
 
-		// If we're only creating files and need no context, it's standalone
-		const isCreationOnly =
-			filesToCreate.length > 0 && filesToModify.length === 0;
-		const needsNoContext = contextFilesNeeded.length === 0;
+		// For single file creation with no other dependencies, check if it's a simple standalone type
+		if (filesToCreate.length === 1) {
+			const file = filesToCreate[0];
+			const standaloneExtensions = [
+				".html",
+				".css",
+				".js",
+				".md",
+				".txt",
+				".json",
+			];
+			const isStandaloneType = standaloneExtensions.some((ext) =>
+				file.toLowerCase().endsWith(ext)
+			);
 
-		// Check if the files are simple standalone types
-		const standaloneExtensions = [
-			".html",
-			".css",
-			".js",
-			".md",
-			".txt",
-			".json",
-		];
-		const isStandaloneType = filesToCreate.some((file: string) =>
-			standaloneExtensions.some((ext) => file.toLowerCase().endsWith(ext))
-		);
+			// Only consider it standalone if it's a simple single file with no coordination needs
+			return isStandaloneType;
+		}
 
-		return isCreationOnly && needsNoContext && isStandaloneType;
+		return false;
 	}
 }
