@@ -3,14 +3,14 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as ts from "typescript";
-import { DependencyExtractor } from "./dependancy-tree";
-import { AnthropicService } from "./anthropic-service";
-import { ConfigManager } from "./config-manager";
-import { ShellExecutor } from "./shell-executor";
+import { DependencyExtractor } from "../dependancy-tree";
+import { AnthropicService } from "../anthropic-service";
+import { ConfigManager } from "../config-manager";
+import { ShellExecutor } from "../shell-executor";
 import { ProjectAnalyzer } from "./project-analyzer";
 import { SyntaxChecker } from "./syntax-checker";
 import { SmartFileEditor } from "./smart-file-editor";
-import colors from "./colors";
+import colors from "../colors";
 
 interface FileContext {
 	path: string;

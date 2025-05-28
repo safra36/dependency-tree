@@ -2,12 +2,12 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { DependencyExtractor } from "./dependancy-tree";
-import { AnthropicService } from "./anthropic-service";
-import { ConfigManager } from "./config-manager";
+import { DependencyExtractor } from "../dependancy-tree";
+import { AnthropicService } from "../anthropic-service";
+import { ConfigManager } from "../config-manager";
 import { SmartFileEditor } from "./smart-file-editor";
 import { SyntaxChecker } from "./syntax-checker";
-import colors from "./colors";
+import colors from "../colors";
 
 interface ActionItem {
 	id: string;

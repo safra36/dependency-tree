@@ -1,7 +1,7 @@
 // path: anthropic-service.ts
 
 import Anthropic from "@anthropic-ai/sdk";
-import { AIEditResponse } from "./ai-prompt-system";
+import { AIEditResponse } from "./old/ai-prompt-system";
 import colors from "./colors";
 
 interface AnthropicConfig {

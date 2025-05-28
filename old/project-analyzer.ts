@@ -2,8 +2,8 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { ShellExecutor } from "./shell-executor";
-import colors from "./colors";
+import { ShellExecutor } from "../shell-executor";
+import colors from "../colors";
 
 interface ProjectInfo {
   type: "react" | "next" | "vue" | "svelte" | "node" | "angular" | "unknown";

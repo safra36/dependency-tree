@@ -1,55 +1,33 @@
 {
-  "name": "ai-coding-agent",
-  "version": "2.0.0",
-  "description": "Enhanced sequential AI coding agent with systematic approach, dependency analysis, and complete file replacement strategy",
-  "main": "dist/enhanced-interactive-cli.js",
+  "name": "robust-ai-agent",
+  "version": "3.0.0",
+  "description": "Robust AI coding agent with XML-based communication and comprehensive file operations",
+  "main": "dist/robust-cli.js",
   "bin": {
-    "ai-agent": "./dist/enhanced-interactive-cli.js",
-    "ai-code": "./bin/ai-agent",
-    "ai-enhanced": "./dist/enhanced-interactive-cli.js",
-    "deps-tree": "./dependancy-tree.js"
+    "robust-ai": "./dist/robust-cli.js"
   },
-  "preferGlobal": true,
   "scripts": {
     "build": "tsc",
     "build:watch": "tsc --watch",
-    "clean": "rm -rf dist",
-    "dev": "tsc --watch",
-    "start": "npm run enhanced",
-    "interactive": "npm run build && node dist/interactive-cli.js",
-    "enhanced": "npm run build && node dist/enhanced-interactive-cli.js",
-    "agent": "npm run enhanced",
-    "legacy": "npm run interactive",
-    "prepublishOnly": "npm run build",
-    "postinstall": "npm run build || echo 'Build failed, please run npm run build manually'",
-    "test:ai": "npm run build && node -e \"const {EnhancedAnthropicService} = require('./dist/enhanced-anthropic-service'); new EnhancedAnthropicService({apiKey: process.env.ANTHROPIC_API_KEY}).testConnection().then(r => console.log('AI Connection:', r ? 'OK' : 'Failed'))\"",
-    "setup": "npm install && npm run build && echo '✅ Enhanced AI Agent setup complete!'",
-    "global:install": "npm run build && npm link",
-    "global:uninstall": "npm unlink",
-    "help": "echo 'Available commands: ai-enhanced (recommended), ai-agent (legacy), deps-tree'"
+    "start": "npm run build && node dist/robust-cli.js",
+    "dev": "npm run build:watch",
+    "test:connection": "npm run build && node -e \"const {RobustAIAgent} = require('./dist/robust-ai-agent'); new RobustAIAgent(process.cwd()).testConnection().then(r => console.log('AI Connection:', r ? 'OK' : 'Failed'))\"",
+    "check-types": "npm run build && node -e \"const {RobustAIAgent} = require('./dist/robust-ai-agent'); const agent = new RobustAIAgent(process.cwd()); agent.initialize().then(() => agent.checkTypes()).then(r => console.log(r))\"",
+    "setup": "npm install && npm run build && echo '✅ Robust AI Agent setup complete!'",
+    "global:install": "npm run build && npm link"
   },
   "keywords": [
-    "ai",
-    "coding-agent",
-    "claude",
+    "ai-agent",
+    "coding-assistant", 
+    "xml-based",
+    "file-operations",
+    "shell-execution",
+    "type-checking",
     "anthropic",
-    "dependency-analysis",
-    "code-editing",
-    "typescript",
-    "refactoring",
-    "sequential-processing",
-    "systematic-approach",
-    "interactive",
-    "automation",
-    "shell",
-    "project-management",
-    "cli",
-    "global",
-    "enhanced",
-    "v2"
+    "claude",
+    "robust",
+    "cli"
   ],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.0"
   },
@@ -59,16 +37,5 @@
   },
   "engines": {
     "node": ">=16.0.0"
-  },
-  "files": [
-    "dist/",
-    "bin/",
-    "dependancy-tree.js",
-    "README.md",
-    ".env.example"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/your-username/ai-coding-agent.git"
   }
 }

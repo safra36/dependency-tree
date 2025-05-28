@@ -5,11 +5,11 @@ import * as readline from "readline";
 import { AICodeAgent } from "./ai-coding-agent";
 import { AIPromptSystem } from "./ai-prompt-system";
 import { LineTrackingEditor } from "./line-tracker-editor";
-import { ConfigManager } from "./config-manager";
-import { AnthropicService } from "./anthropic-service";
+import { ConfigManager } from "../config-manager";
+import { AnthropicService } from "../anthropic-service";
 import * as path from "path";
 import * as fs from "fs";
-import colors from "./colors";
+import colors from "../colors";
 
 interface SessionConfig {
   projectRoot: string;

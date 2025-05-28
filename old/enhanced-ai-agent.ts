@@ -1,12 +1,12 @@
-// path: enhanced-ai-agent-fixed.ts
+// path: enhanced-ai-agent-complete.ts
 
 import * as fs from "fs";
 import * as path from "path";
 import { spawn } from "child_process";
-import { AnthropicService } from "./anthropic-service";
-import { ConfigManager } from "./config-manager";
+import { AnthropicService } from "../anthropic-service";
+import { ConfigManager } from "../config-manager";
 import { SyntaxChecker } from "./syntax-checker";
-import colors from "./colors";
+import colors from "../colors";
 
 interface PlanStep {
 	id: string;
@@ -137,7 +137,7 @@ class ContentCleaner {
 		this.logger.log("DEBUG", "Starting content cleaning", {
 			responseLength: response.length,
 			expectedType,
-			preview: response.substring(0, 100) + "...",
+			preview: response.substring(0, 200) + "...",
 		});
 
 		let content = response.trim();
@@ -182,7 +182,10 @@ class ContentCleaner {
 				JSON.parse(trimmed);
 				return "json";
 			} catch {
-				// Not valid JSON, continue checking
+				// Check if it's CSS starting with a selector
+				if (this.looksLikeCss(trimmed)) {
+					return "css";
+				}
 			}
 		}
 
@@ -204,6 +207,9 @@ class ContentCleaner {
 			/^[^{]*\{[^}]*\}/m, // Basic CSS rule pattern
 			/^@[a-zA-Z-]+/m, // CSS at-rules
 			/(margin|padding|color|background|font|border):/m,
+			/^\s*body\s*{/m, // body selector
+			/^\s*\.[\w-]+\s*{/m, // class selector
+			/^\s*#[\w-]+\s*{/m, // id selector
 		];
 
 		return cssPatterns.some((pattern) => pattern.test(content));
@@ -257,6 +263,15 @@ class ContentCleaner {
 			return htmlMatch[1].trim();
 		}
 
+		// Check if this looks like CSS that was mistakenly expected to be HTML
+		if (this.looksLikeCss(content)) {
+			this.logger.log(
+				"WARN",
+				"Content appears to be CSS, not HTML - attempting to reconstruct HTML"
+			);
+			return this.reconstructHtmlFromCss(content);
+		}
+
 		// If no complete document, look for HTML fragment
 		if (content.includes("<html") || content.includes("<!DOCTYPE")) {
 			// Try to fix incomplete HTML
@@ -270,9 +285,59 @@ class ContentCleaner {
 
 		this.logger.log(
 			"WARN",
-			"No HTML structure detected, returning content as-is"
+			"No HTML structure detected, attempting to reconstruct"
 		);
-		return content.trim();
+		return this.reconstructBasicHtml(content);
+	}
+
+	private reconstructHtmlFromCss(cssContent: string): string {
+		this.logger.log("DEBUG", "Reconstructing HTML from CSS content");
+
+		// This is a fallback when AI returns CSS instead of HTML
+		const basicHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generated Page</title>
+    <style>
+${cssContent}
+    </style>
+</head>
+<body>
+    <div class="content">
+        <h1>Content</h1>
+        <p>This page was generated with embedded styles.</p>
+    </div>
+</body>
+</html>`;
+
+		this.logger.log("DEBUG", "Reconstructed basic HTML with embedded CSS");
+		return basicHtml;
+	}
+
+	private reconstructBasicHtml(content: string): string {
+		this.logger.log("DEBUG", "Reconstructing basic HTML structure");
+
+		// Try to preserve any existing content
+		const bodyContent = content.includes("<")
+			? content
+			: `<p>${content}</p>`;
+
+		const basicHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generated Page</title>
+</head>
+<body>
+    ${bodyContent}
+</body>
+</html>`;
+
+		this.logger.log("DEBUG", "Reconstructed basic HTML structure");
+		return basicHtml;
 	}
 
 	private cleanCssContent(content: string): string {
@@ -1003,7 +1068,6 @@ CRITICAL: Respond with ONLY valid JSON. No explanations before or after.`;
 			);
 			console.log(`      Purpose: ${colors.gray(change.purpose)}`);
 		});
-		console.log("");
 
 		const results: any[] = [];
 		let successCount = 0;
@@ -1247,7 +1311,7 @@ CRITICAL: Respond with ONLY valid JSON. No explanations before or after.`;
 			});
 		}
 
-		// Enhanced prompt with better content type specification
+		// Enhanced prompt with explicit HTML requirements
 		const filePrompt = `You are implementing a file change as part of a systematic coding task.
 
 ORIGINAL REQUEST: "${this.userRequest}"
@@ -1276,6 +1340,20 @@ CREATION INSTRUCTIONS:
 `
 }
 
+${
+	expectedType === "html"
+		? `
+CRITICAL HTML REQUIREMENTS:
+- MUST start with: <!DOCTYPE html>
+- MUST include complete HTML structure: <html><head></head><body></body></html>
+- MUST include proper meta tags and title
+- If this is a modification, preserve the existing HTML structure
+- If creating new HTML, include ALL necessary tags and structure
+- Do NOT return only CSS or JavaScript - return COMPLETE HTML document
+`
+		: ""
+}
+
 PROJECT CONTEXT FOR REFERENCE:
 ${contextStr}
 
@@ -1283,7 +1361,7 @@ CRITICAL OUTPUT REQUIREMENTS:
 - Respond with ONLY the complete ${expectedType.toUpperCase()} file content
 - NO JSON wrapping, NO markdown code blocks, NO explanations
 - Start directly with the file content
-- For HTML: Start with <!DOCTYPE html>
+- For HTML: MUST start with <!DOCTYPE html>
 - For CSS: Start with the first CSS rule
 - For JS: Start with the first line of code
 - For JSON: Start with { or [
@@ -1455,6 +1533,7 @@ Generate the complete ${expectedType.toUpperCase()} content for ${
 		}
 	}
 
+	// Helper methods
 	private async scanExistingFiles(): Promise<
 		Array<{
 			path: string;
@@ -1569,6 +1648,7 @@ Generate the complete ${expectedType.toUpperCase()} content for ${
 		}
 		return files;
 	}
+
 	private findProjectEntryPoints(): string[] {
 		const candidates = [
 			// TypeScript/Node.js entry points
@@ -1714,30 +1794,6 @@ Generate the complete ${expectedType.toUpperCase()} content for ${
 		return fileNames;
 	}
 
-	private extractContentFromOutput(output: string, fileName: string): string {
-		// Extract content from dependency-tree.js --format content output
-		const sections = output.split("===");
-		for (const section of sections) {
-			if (section.includes(fileName)) {
-				// Extract content between code blocks
-				const codeBlockMatch = section.match(
-					/```[\w]*\n([\s\S]*?)\n```/
-				);
-				if (codeBlockMatch && codeBlockMatch[1]) {
-					return codeBlockMatch[1];
-				}
-			}
-		}
-
-		// Fallback: read file directly
-		const filePath = path.resolve(this.projectRoot, fileName);
-		if (fs.existsSync(filePath)) {
-			return fs.readFileSync(filePath, "utf-8");
-		}
-
-		return "";
-	}
-
 	private cleanJsonResponse(response: string): string {
 		// Remove markdown code blocks if present
 		let cleaned = response
@@ -1768,18 +1824,6 @@ Generate the complete ${expectedType.toUpperCase()} content for ${
 		return cleaned.trim();
 	}
 
-	private unescapeContent(content: string): string {
-		if (typeof content !== "string") return "";
-
-		// Unescape common JSON escape sequences
-		return content
-			.replace(/\\n/g, "\n")
-			.replace(/\\r/g, "\r")
-			.replace(/\\t/g, "\t")
-			.replace(/\\"/g, '"')
-			.replace(/\\\\/g, "\\");
-	}
-
 	private getModifiedFiles(): string[] {
 		const executionResults =
 			this.executionPlan.find((step) => step.phase === "execute")?.details
@@ -1804,11 +1848,11 @@ Generate the complete ${expectedType.toUpperCase()} content for ${
 	private async pause(message: string): Promise<void> {
 		console.log(colors.gray(`\n⏸️  ${message}`));
 		console.log(
-			colors.gray("⏳ Pausing for 5 seconds to let you catch up...")
+			colors.gray("⏳ Pausing for 2 seconds to let you catch up...")
 		);
 
-		// 5 second pause
-		await new Promise((resolve) => setTimeout(resolve, 5000));
+		// 2 second pause
+		await new Promise((resolve) => setTimeout(resolve, 2000));
 
 		console.log(colors.gray("▶️  Continuing...\n"));
 	}
@@ -1870,188 +1914,5 @@ Generate the complete ${expectedType.toUpperCase()} content for ${
 		}
 
 		return false;
-	}
-
-	// path: enhanced-ai-agent.ts (improved cleanGeneratedContent method)
-
-	private cleanGeneratedContent(response: string): string {
-		if (this.debug) {
-			console.log(
-				colors.cyan("🔧 [DEBUG] Cleaning generated content...")
-			);
-			console.log(
-				colors.gray(
-					`  Response preview: ${response.substring(0, 100)}...`
-				)
-			);
-		}
-
-		let content = response.trim();
-
-		// Remove markdown code blocks if present (but preserve content)
-		content = content.replace(/^```[\w]*\n/, "").replace(/\n```$/, "");
-
-		// Check for HTML content - return directly if found
-		if (
-			content.includes("<!DOCTYPE html>") ||
-			content.startsWith("<html")
-		) {
-			if (this.debug) {
-				console.log(
-					colors.gray(
-						"  ✅ Complete HTML document detected, returning as-is"
-					)
-				);
-			}
-			return content;
-		}
-
-		// Check if this is a JSON-wrapped response
-		try {
-			const jsonMatch = content.match(/^\s*\{[\s\S]*\}\s*$/);
-			if (jsonMatch) {
-				const parsed = JSON.parse(jsonMatch[0]);
-
-				// Check for content fields
-				const contentFields = [
-					"content",
-					"fileContent",
-					"code",
-					"implementation",
-				];
-				for (const field of contentFields) {
-					if (parsed[field] && typeof parsed[field] === "string") {
-						if (this.debug) {
-							console.log(
-								colors.gray(
-									`  ✅ Extracted content from JSON.${field} field`
-								)
-							);
-						}
-						return this.unescapeContent(parsed[field]);
-					}
-				}
-			}
-		} catch (error) {
-			// Not JSON, continue with raw content processing
-		}
-
-		// If we have HTML fragments or content that looks like it should be HTML
-		if (
-			content.includes("<html") ||
-			content.includes("<head") ||
-			content.includes("<body") ||
-			content.includes("<style")
-		) {
-			// This might be a mangled HTML file - try to reconstruct
-			if (!content.includes("<!DOCTYPE html>")) {
-				// Try to find where the HTML actually starts
-				const htmlStart = content.indexOf("<html");
-				const headStart = content.indexOf("<head");
-				const bodyStart = content.indexOf("<body");
-
-				let startIndex = Math.min(
-					htmlStart !== -1 ? htmlStart : Infinity,
-					headStart !== -1 ? headStart : Infinity,
-					bodyStart !== -1 ? bodyStart : Infinity
-				);
-
-				if (startIndex !== Infinity) {
-					content = content.substring(startIndex);
-					// Add DOCTYPE if missing
-					content = "<!DOCTYPE html>\n" + content;
-
-					if (this.debug) {
-						console.log(
-							colors.gray("  🔧 Reconstructed HTML structure")
-						);
-					}
-				}
-			}
-
-			return content;
-		}
-
-		// For other content types (CSS, JS, etc.), minimal cleaning
-		const lines = content.split("\n");
-
-		// Remove obvious explanatory text but preserve code structure
-		let cleanedLines = lines.filter((line) => {
-			const trimmed = line.trim();
-			return !(
-				trimmed === "" ||
-				trimmed.toLowerCase().startsWith("here") ||
-				trimmed.toLowerCase().startsWith("this is") ||
-				trimmed.toLowerCase().startsWith("note:")
-			);
-		});
-
-		if (this.debug) {
-			console.log(
-				colors.gray(
-					`  ✅ Cleaned content (${
-						cleanedLines.join("\n").length
-					} chars)`
-				)
-			);
-		}
-
-		return cleanedLines.join("\n").trim();
-	}
-
-	// Additional method to validate HTML completeness
-	private validateHtmlCompleteness(content: string): boolean {
-		const requiredElements = [
-			"<!DOCTYPE html>",
-			"<html",
-			"<head",
-			"</head>",
-			"<body",
-			"</body>",
-			"</html>",
-		];
-
-		return requiredElements.every((element) => content.includes(element));
-	}
-
-	// Method to complete HTML structure if needed
-	private ensureCompleteHtml(content: string): string {
-		if (this.validateHtmlCompleteness(content)) {
-			return content;
-		}
-
-		// If HTML is incomplete, try to complete it
-		let completed = content;
-
-		if (!completed.includes("<!DOCTYPE html>")) {
-			completed = "<!DOCTYPE html>\n" + completed;
-		}
-
-		if (!completed.includes("<html")) {
-			completed = completed.replace(
-				"<!DOCTYPE html>",
-				"<!DOCTYPE html>\n<html>"
-			);
-		}
-
-		if (!completed.includes("</html>")) {
-			completed += "\n</html>";
-		}
-
-		if (!completed.includes("</body>") && completed.includes("<body")) {
-			completed = completed.replace("</html>", "</body>\n</html>");
-		}
-
-		if (!completed.includes("</head>") && completed.includes("<head")) {
-			const bodyIndex = completed.indexOf("<body");
-			if (bodyIndex !== -1) {
-				completed =
-					completed.slice(0, bodyIndex) +
-					"</head>\n" +
-					completed.slice(bodyIndex);
-			}
-		}
-
-		return completed;
 	}
 }

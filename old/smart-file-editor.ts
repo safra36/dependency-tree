@@ -2,7 +2,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import colors from "./colors";
+import colors from "../colors";
 
 interface JsonMergeOperation {
   path: string; // JSON path like "compilerOptions.incremental"

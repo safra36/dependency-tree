@@ -1,7 +1,7 @@
 // path: enhanced-anthropic-service.ts
 
 import Anthropic from "@anthropic-ai/sdk";
-import colors from "./colors";
+import colors from "../colors";
 
 interface AnthropicConfig {
 	apiKey: string;

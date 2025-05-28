@@ -1,13 +1,13 @@
 // path: ai-prompt-system.ts
 
 import { LineTrackingEditor, EditOperation } from "./line-tracker-editor";
-import { AnthropicService } from "./anthropic-service";
-import { ConfigManager } from "./config-manager";
+import { AnthropicService } from "../anthropic-service";
+import { ConfigManager } from "../config-manager";
 import * as ts from "typescript";
 import * as fs from "fs";
 import * as path from "path";
-import { DependencyExtractor } from "./dependancy-tree";
-import colors from "./colors";
+import { DependencyExtractor } from "../dependancy-tree";
+import colors from "../colors";
 
 interface AIEditResponse {
   file: string;

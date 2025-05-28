@@ -3,11 +3,11 @@
 
 import * as readline from "readline";
 import { EnhancedSequentialAIAgent } from "./enhanced-ai-agent";
-import { ConfigManager } from "./config-manager";
+import { ConfigManager } from "../config-manager";
 import { EnhancedAnthropicService } from "./enhanced-anthropic-service";
 import * as path from "path";
 import * as fs from "fs";
-import colors from "./colors";
+import colors from "../colors";
 
 interface SessionConfig {
 	projectRoot: string;
