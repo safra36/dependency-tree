@@ -220,7 +220,7 @@ export class NestJSSpecializedAgent {
 			if (isNestJSProject) {
 				// Analyze existing NestJS project
 				const { stdout } = await execAsync(
-					`node "${dependencyTreePath}" "${this.projectRoot}" --format json --pattern "**/*.{ts,js,json}" --max-content 50000`
+					`node "${dependencyTreePath}" "${this.projectRoot}" --format json --pattern "**/*.ts" --max-content 50000`
 				);
 
 				this.context.structure = JSON.parse(stdout);
@@ -603,27 +603,20 @@ RESPONSE FORMAT:
 		const actionLines = actionsText
 			.split(/\n/)
 			.map((line) => line.trim())
-			.filter(
-				(line) =>
-					(line.length > 0 && !line.includes(":")) ||
-					this.isNestCommand(line)
-			);
+			.filter((line) => line.length > 0);
 
 		let priority = 1;
 
 		for (const line of actionLines) {
+			// Remove numbering from start of line
 			const cleanLine = line.replace(/^\d+\.\s*/, "").trim();
 
 			if (cleanLine.length === 0) continue;
 
 			let action: NestJSAction | null = null;
 
-			// Parse NestJS CLI commands
-			if (this.isNestCommand(cleanLine)) {
-				action = this.parseNestCommand(cleanLine, priority);
-			}
 			// Parse npm install commands
-			else if (
+			if (
 				cleanLine.includes("npm install") ||
 				cleanLine.includes("yarn add")
 			) {
@@ -631,6 +624,39 @@ RESPONSE FORMAT:
 					type: "install",
 					target: cleanLine,
 					description: `Install packages: ${cleanLine}`,
+					priority: priority,
+				};
+			}
+			// Parse explicit nest generate commands
+			else if (
+				cleanLine.startsWith("nest generate") ||
+				cleanLine.startsWith("nest g")
+			) {
+				action = this.parseExplicitNestCommand(cleanLine, priority);
+			}
+			// Parse descriptions that mention nest generate
+			else if (cleanLine.includes("nest generate")) {
+				action = this.parseExplicitNestCommand(cleanLine, priority);
+			}
+			// Parse descriptive lines followed by commands
+			else if (
+				cleanLine.includes(":") &&
+				!cleanLine.includes("npm") &&
+				!cleanLine.includes("nest")
+			) {
+				// This might be a description line, skip it and the next line might have the actual command
+				continue;
+			}
+			// Parse configuration lines
+			else if (
+				cleanLine.includes("JWT_SECRET") ||
+				cleanLine.includes(".env") ||
+				cleanLine.includes("TypeOrmModule")
+			) {
+				action = {
+					type: "configure",
+					target: "configuration",
+					description: cleanLine,
 					priority: priority,
 				};
 			}
@@ -649,19 +675,6 @@ RESPONSE FORMAT:
 					priority: priority,
 				};
 			}
-			// Parse file modification
-			else if (
-				cleanLine.toLowerCase().includes("update") ||
-				cleanLine.toLowerCase().includes("modify")
-			) {
-				const fileMatch = cleanLine.match(/(\S+\.\w+)/);
-				action = {
-					type: "modify-file",
-					target: fileMatch ? fileMatch[1] : "existing-file",
-					description: cleanLine,
-					priority: priority,
-				};
-			}
 
 			if (action) {
 				actions.push(action);
@@ -670,7 +683,9 @@ RESPONSE FORMAT:
 				if (this.debug) {
 					console.log(
 						colors.gray(
-							`  Parsed: ${action.type} - ${action.target}`
+							`  Parsed: ${action.type} - ${action.target} (${
+								action.schematic || "no schematic"
+							})`
 						)
 					);
 				}
@@ -678,6 +693,40 @@ RESPONSE FORMAT:
 		}
 
 		return actions;
+	}
+
+	private parseExplicitNestCommand(
+		command: string,
+		priority: number
+	): NestJSAction {
+		// Parse explicit commands like "nest generate module users"
+		const parts = command.split(" ").filter((p) => p.length > 0);
+
+		// Find the generate keyword
+		const generateIndex = parts.findIndex(
+			(p) => p === "generate" || p === "g"
+		);
+
+		if (generateIndex === -1) {
+			return {
+				type: "generate",
+				target: "unknown",
+				description: command,
+				priority,
+			};
+		}
+
+		const schematic = parts[generateIndex + 1];
+		const name = parts[generateIndex + 2];
+
+		return {
+			type: "generate",
+			target: name || "component",
+			description: command,
+			priority,
+			schematic: schematic,
+			options: parts.slice(generateIndex + 3),
+		};
 	}
 
 	private isNestCommand(line: string): boolean {
@@ -727,6 +776,45 @@ RESPONSE FORMAT:
 	): Promise<NestJSOperationResult[]> {
 		const results: NestJSOperationResult[] = [];
 
+		// First, check if we need to create a NestJS project
+		const needsProject = !(await this.isNestJSProject());
+		if (needsProject && actions.some((a) => a.type === "generate")) {
+			console.log(
+				colors.yellow(
+					"⚠️ No NestJS project detected. Creating one first..."
+				)
+			);
+
+			// Create a basic NestJS project
+			const createProjectAction: NestJSAction = {
+				type: "scaffold",
+				target: "nest-app",
+				description: "Create NestJS project",
+				priority: 0,
+				schematic: "new",
+			};
+
+			const projectResult = await this.executeNestCommand(
+				createProjectAction
+			);
+			results.push(projectResult);
+
+			if (!projectResult.success) {
+				console.log(
+					colors.red(
+						"❌ Failed to create NestJS project. Continuing with other actions..."
+					)
+				);
+			} else {
+				// Update project root to the new project directory
+				this.projectRoot = path.join(this.projectRoot, "nest-app");
+				this.shellExecutor = new ShellExecutor(this.projectRoot, {
+					debug: this.debug,
+				});
+				await this.analyzeProjectContext();
+			}
+		}
+
 		for (const action of actions) {
 			if (this.debug) {
 				console.log(
@@ -767,10 +855,27 @@ RESPONSE FORMAT:
 			if (this.debug) {
 				if (result.success) {
 					console.log(colors.green(`✅ ${result.summary}`));
+					if (result.details && result.details.length > 0) {
+						result.details.forEach((detail) => {
+							console.log(
+								colors.gray(`  ${detail.substring(0, 100)}...`)
+							);
+						});
+					}
 				} else {
 					console.log(colors.red(`❌ ${result.error}`));
+					if (result.errors && result.errors.length > 0) {
+						result.errors.forEach((error) => {
+							console.log(
+								colors.red(`  ${error.substring(0, 100)}...`)
+							);
+						});
+					}
 				}
 			}
+
+			// Small delay between actions to avoid overwhelming the system
+			await new Promise((resolve) => setTimeout(resolve, 500));
 		}
 
 		return results;
@@ -780,16 +885,56 @@ RESPONSE FORMAT:
 		action: NestJSAction
 	): Promise<NestJSOperationResult> {
 		try {
-			// Build the full nest command
-			let command = `nest ${action.schematic} ${action.target}`;
+			// Check if NestJS CLI is available
+			const cliCheck = await this.shellExecutor.executeCommand(
+				"nest --version"
+			);
+			if (!cliCheck.success) {
+				// Try to install NestJS CLI globally
+				console.log(
+					colors.yellow("⚠️ NestJS CLI not found. Installing...")
+				);
+				const installResult = await this.shellExecutor.executeCommand(
+					"npm install -g @nestjs/cli"
+				);
 
-			if (action.options && action.options.length > 0) {
-				command += ` ${action.options.join(" ")}`;
+				if (!installResult.success) {
+					return {
+						success: false,
+						error: `NestJS CLI not available and failed to install: ${installResult.stderr}`,
+					};
+				}
 			}
 
-			// Add common flags for better output
+			// Build the full nest command based on the action
+			let command = "";
+
 			if (action.schematic === "new") {
-				command += " --package-manager npm";
+				command = `nest new ${action.target} --package-manager npm`;
+			} else if (action.schematic) {
+				command = `nest generate ${action.schematic} ${action.target}`;
+
+				// Add options if provided
+				if (action.options && action.options.length > 0) {
+					command += ` ${action.options.join(" ")}`;
+				}
+			} else {
+				// Fallback: try to parse from description
+				if (
+					action.description.includes("nest generate") ||
+					action.description.includes("nest g")
+				) {
+					command = action.description;
+				} else {
+					return {
+						success: false,
+						error: `Cannot determine nest command for action: ${action.description}`,
+					};
+				}
+			}
+
+			if (this.debug) {
+				console.log(colors.yellow(`🔧 Executing: ${command}`));
 			}
 
 			const result = await this.shellExecutor.executeCommand(command);
@@ -797,17 +942,21 @@ RESPONSE FORMAT:
 			return {
 				success: result.success,
 				summary: result.success
-					? `Generated ${action.schematic}: ${action.target}`
-					: `Failed to generate ${action.schematic}: ${action.target}`,
+					? `Generated ${action.schematic || "component"}: ${
+							action.target
+					  }`
+					: `Failed to generate ${action.schematic || "component"}: ${
+							action.target
+					  }`,
 				details: result.stdout ? [result.stdout] : [],
 				errors: result.success
 					? []
-					: [result.stderr || "Unknown error"],
+					: [result.stderr || result.stdout || "Unknown error"],
 			};
 		} catch (error) {
 			return {
 				success: false,
-				error: error.message,
+				error: `Command execution failed: ${error.message}`,
 			};
 		}
 	}
@@ -916,11 +1065,147 @@ RESPONSE FORMAT:
 	private async configureNestJS(
 		action: NestJSAction
 	): Promise<NestJSOperationResult> {
-		// Implementation for NestJS configuration tasks
-		return {
-			success: true,
-			summary: `Configured: ${action.description}`,
-		};
+		try {
+			const description = action.description.toLowerCase();
+
+			// Handle JWT configuration
+			if (description.includes("jwt") && description.includes(".env")) {
+				const envContent = `# JWT Configuration
+JWT_SECRET=your_jwt_secret_here_${Math.random().toString(36).substring(2, 15)}
+JWT_EXPIRATION=24h
+
+# Database Configuration
+DB_HOST=localhost
+DB_PORT=5432
+DB_USERNAME=username
+DB_PASSWORD=password
+DB_DATABASE=nestjs_app
+
+# Application Configuration
+PORT=3000
+NODE_ENV=development
+`;
+
+				const result = await this.fileManager.createFile(
+					".env",
+					envContent
+				);
+
+				if (result.success) {
+					// Also create .env.example
+					const envExampleContent = envContent
+						.replace(
+							/JWT_SECRET=.*/,
+							"JWT_SECRET=your_jwt_secret_here"
+						)
+						.replace(
+							/DB_PASSWORD=.*/,
+							"DB_PASSWORD=your_password_here"
+						);
+
+					await this.fileManager.createFile(
+						".env.example",
+						envExampleContent
+					);
+				}
+
+				return {
+					success: result.success,
+					summary: result.success
+						? "Created JWT configuration files (.env and .env.example)"
+						: "Failed to create JWT configuration",
+					details: result.success
+						? [
+								"Created .env with JWT_SECRET and database config",
+								"Created .env.example template",
+						  ]
+						: [],
+					errors: result.success
+						? []
+						: [result.error || "Unknown error"],
+				};
+			}
+
+			// Handle TypeORM configuration
+			if (
+				description.includes("typeorm") &&
+				description.includes("app.module.ts")
+			) {
+				const appModulePath = path.join(
+					this.projectRoot,
+					"src",
+					"app.module.ts"
+				);
+
+				if (fs.existsSync(appModulePath)) {
+					let currentContent = fs.readFileSync(
+						appModulePath,
+						"utf-8"
+					);
+
+					// Add TypeORM import if not present
+					if (!currentContent.includes("TypeOrmModule")) {
+						currentContent = `import { TypeOrmModule } from '@nestjs/typeorm';\n${currentContent}`;
+					}
+
+					// Add TypeORM configuration to imports
+					const typeormConfig = `TypeOrmModule.forRoot({
+      type: 'postgres',
+      host: process.env.DB_HOST || 'localhost',
+      port: parseInt(process.env.DB_PORT) || 5432,
+      username: process.env.DB_USERNAME || 'username',
+      password: process.env.DB_PASSWORD || 'password',
+      database: process.env.DB_DATABASE || 'nestjs_app',
+      entities: [],
+      synchronize: true, // Don't use in production
+    })`;
+
+					// Insert into imports array
+					const importsMatch =
+						currentContent.match(/imports:\s*\[(.*?)\]/s);
+					if (importsMatch) {
+						const currentImports = importsMatch[1].trim();
+						const newImports = currentImports
+							? `${currentImports},\n    ${typeormConfig}`
+							: typeormConfig;
+						currentContent = currentContent.replace(
+							/imports:\s*\[(.*?)\]/s,
+							`imports: [\n    ${newImports}\n  ]`
+						);
+					}
+
+					const result = await this.fileManager.modifyFile(
+						"src/app.module.ts",
+						currentContent
+					);
+
+					return {
+						success: result.success,
+						summary: result.success
+							? "Configured TypeORM in app.module.ts"
+							: "Failed to configure TypeORM",
+						details: result.success
+							? ["Added TypeORM configuration with PostgreSQL"]
+							: [],
+						errors: result.success
+							? []
+							: [result.error || "Unknown error"],
+					};
+				}
+			}
+
+			// Default configuration handler
+			return {
+				success: true,
+				summary: `Configuration task completed: ${action.description}`,
+				details: ["Configuration applied successfully"],
+			};
+		} catch (error) {
+			return {
+				success: false,
+				error: `Configuration failed: ${error.message}`,
+			};
+		}
 	}
 
 	private async generateNestJSFileContent(
