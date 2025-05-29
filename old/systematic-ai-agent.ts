@@ -6,7 +6,7 @@ import { DependencyExtractor } from "../dependancy-tree";
 import { AnthropicService } from "../anthropic-service";
 import { ConfigManager } from "../config-manager";
 import { SmartFileEditor } from "./smart-file-editor";
-import { SyntaxChecker } from "./syntax-checker";
+import { SyntaxChecker } from "../syntax-checker";
 import colors from "../colors";
 
 interface ActionItem {

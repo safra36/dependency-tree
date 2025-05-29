@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // path: robust-cli.ts
 
-import colors from "colors";
-import { ConfigManager } from "config-manager";
+import colors from "./colors";
+import { ConfigManager } from "./config-manager";
 import * as readline from "readline";
-import { RobustAIAgent } from "robust-ai-agent";
+import { RobustAIAgent } from "./robust-ai-agent";
 
 class RobustCLI {
 	private rl: readline.Interface;

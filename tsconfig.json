@@ -45,7 +45,7 @@
 		"src/**/*.js",
 		"old/interactive-cli.ts",
 		"colors.ts"
-, "anthropic-service.ts", "old/cli.ts", "config-manager.ts", "old/content-parser.ts", "old/enhanced-ai-agent.ts", "old/enhanced-anthropic-service.ts", "old/enhanced-interactive-cli.ts", "old/line-tracker-editor.ts", "old/log-analyzer.ts", "old/ai-agent.ts", "old/ai-coding-agent.ts", "old/ai-prompt-system.ts", "old/project-analyzer.ts", "old/separator-content-parser.ts", "shell-executor.ts", "old/simple-cli.ts", "old/simplified-ai-agent.ts", "old/smart-file-editor.ts", "old/syntax-checker.ts", "old/systematic-ai-agent.ts"	],
+, "anthropic-service.ts", "old/cli.ts", "config-manager.ts", "old/content-parser.ts", "old/enhanced-ai-agent.ts", "old/enhanced-anthropic-service.ts", "old/enhanced-interactive-cli.ts", "old/line-tracker-editor.ts", "old/log-analyzer.ts", "old/ai-agent.ts", "old/ai-coding-agent.ts", "old/ai-prompt-system.ts", "old/project-analyzer.ts", "old/separator-content-parser.ts", "shell-executor.ts", "old/simple-cli.ts", "old/simplified-ai-agent.ts", "old/smart-file-editor.ts", "syntax-checker.ts", "old/systematic-ai-agent.ts"	],
 	"exclude": [
 		"node_modules",
 		"dist",

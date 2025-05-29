@@ -3,7 +3,7 @@
 import * as ts from "typescript";
 import * as fs from "fs";
 import * as path from "path";
-import colors from "../colors";
+import colors from "./colors";
 
 interface SyntaxError {
   file: string;

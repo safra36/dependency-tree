@@ -1,9 +1,8 @@
 // path: file-operations-manager.ts
 
-import colors from "colors";
+import colors from "./colors";
 import * as fs from "fs";
 import * as path from "path";
-
 
 interface FileOperationResult {
 	success: boolean;
@@ -54,6 +53,15 @@ export class FileOperationsManager {
 			".h",
 			".yml",
 			".yaml",
+			".toml",
+			".ini",
+			".conf",
+			".env", // Environment files
+			".example", // Example files
+			".gitignore", // Git ignore files
+			".prettierrc", // Prettier config
+			".eslintrc", // ESLint config
+			"", // Files without extension
 		];
 
 		if (this.debug) {
@@ -182,7 +190,6 @@ export class FileOperationsManager {
 			fs.writeFileSync(fullPath, newContent, "utf-8");
 
 			if (this.debug) {
-				const oldSize = fs.statSync(fullPath).size;
 				console.log(colors.green(`✅ Modified file: ${relativePath}`));
 				console.log(
 					colors.gray(`  Content: ${newContent.length} chars`)
@@ -430,9 +437,26 @@ export class FileOperationsManager {
 			};
 		}
 
-		// Check file extension
+		// Get file extension (handle files without extension)
 		const ext = path.extname(fullPath).toLowerCase();
-		if (ext && !this.allowedExtensions.includes(ext)) {
+		const filename = path.basename(fullPath);
+
+		// Special cases for common files without extensions or special extensions
+		const isSpecialFile = [
+			".env",
+			".gitignore",
+			".prettierrc",
+			".eslintrc",
+			"Dockerfile",
+			"README",
+			"LICENSE",
+			"Makefile",
+		].some(
+			(special) => filename === special || filename.startsWith(special)
+		);
+
+		// Check file extension (allow files without extension and special files)
+		if (ext && !this.allowedExtensions.includes(ext) && !isSpecialFile) {
 			return {
 				success: false,
 				error: `File extension not allowed: ${ext}`,
@@ -521,8 +545,12 @@ export class FileOperationsManager {
 			".toml",
 			".ini",
 			".conf",
+			".env",
+			".example",
 		];
-		return textExtensions.includes(extension.toLowerCase());
+		return (
+			textExtensions.includes(extension.toLowerCase()) || extension === ""
+		);
 	}
 
 	private shouldSkipItem(item: string): boolean {
@@ -535,7 +563,13 @@ export class FileOperationsManager {
 			".next",
 			".vscode",
 		];
-		return skipItems.includes(item) || item.startsWith(".");
+		return (
+			skipItems.includes(item) ||
+			(item.startsWith(".") &&
+				item !== ".env" &&
+				item !== ".gitignore" &&
+				item !== ".prettierrc")
+		);
 	}
 
 	private formatBytes(bytes: number): string {

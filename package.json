@@ -1,24 +1,29 @@
 {
   "name": "robust-ai-agent",
   "version": "3.0.0",
-  "description": "Robust AI coding agent with XML-based communication and comprehensive file operations",
+  "description": "Robust AI coding agent with XML-based communication and specialized NestJS support",
   "main": "dist/robust-cli.js",
   "bin": {
-    "robust-ai": "./dist/robust-cli.js"
+    "robust-ai": "./dist/robust-cli.js",
+    "nestjs-ai": "./dist/nestjs-specialized-cli.js"
   },
   "scripts": {
     "build": "tsc",
     "build:watch": "tsc --watch",
     "start": "npm run build && node dist/robust-cli.js",
+    "nestjs": "npm run build && node dist/nestjs-specialized-cli.js",
+    "nestjs-agent": "npm run build && node dist/nestjs-specialized-cli.js",
     "dev": "npm run build:watch",
     "test:connection": "npm run build && node -e \"const {RobustAIAgent} = require('./dist/robust-ai-agent'); new RobustAIAgent(process.cwd()).testConnection().then(r => console.log('AI Connection:', r ? 'OK' : 'Failed'))\"",
+    "test:nestjs": "npm run build && node -e \"const {NestJSSpecializedAgent} = require('./dist/nestjs-specialized-agent'); new NestJSSpecializedAgent(process.cwd()).testConnection().then(r => console.log('NestJS AI Connection:', r ? 'OK' : 'Failed'))\"",
     "check-types": "npm run build && node -e \"const {RobustAIAgent} = require('./dist/robust-ai-agent'); const agent = new RobustAIAgent(process.cwd()); agent.initialize().then(() => agent.checkTypes()).then(r => console.log(r))\"",
     "setup": "npm install && npm run build && echo '✅ Robust AI Agent setup complete!'",
-    "global:install": "npm run build && npm link"
+    "global:install": "npm run build && npm link",
+    "analyze-project": "node dependancy-tree.js . --format content --pattern '**/*.{ts,js,json}' --max-content 10000"
   },
   "keywords": [
     "ai-agent",
-    "coding-assistant", 
+    "coding-assistant",
     "xml-based",
     "file-operations",
     "shell-execution",
@@ -26,7 +31,10 @@
     "anthropic",
     "claude",
     "robust",
-    "cli"
+    "cli",
+    "nestjs",
+    "specialized-agent",
+    "dependency-analysis"
   ],
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.0"

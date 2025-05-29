@@ -5,7 +5,7 @@ import * as path from "path";
 import { spawn } from "child_process";
 import { AnthropicService } from "../anthropic-service";
 import { ConfigManager } from "../config-manager";
-import { SyntaxChecker } from "./syntax-checker";
+import { SyntaxChecker } from "../syntax-checker";
 import colors from "../colors";
 
 interface PlanStep {
